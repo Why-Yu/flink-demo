@@ -388,10 +388,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 //            logger.info("ALLT");
             if (landmarkState.contains(query.targetID)) {
                 resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
-                pathCalculator.getAstarShortestPath(query);
+//                pathCalculator.getAstarShortestPath(query);
             } else {
                 resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, false);
-                pathCalculator.getAstarShortestPath(query);
+//                pathCalculator.getAstarShortestPath(query);
             }
         }
         return resultList;

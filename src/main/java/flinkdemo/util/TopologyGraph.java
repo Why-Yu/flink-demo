@@ -231,28 +231,24 @@ public strictfp class TopologyGraph {
         // 生成region cover
         ArrayList<S2CellId> cellIdArrayList = new ArrayList<>();
         regionCoverer.getCovering(myEllipse, cellIdArrayList);
-        // 以cover中的最小级+1作为我们后续point所处cell的粒度
-        int granularity = Integer.MAX_VALUE;
+        // 以cover中所有cellLevel的平均值作为我们后续point所处cell的粒度
+        float levelSum = 0;
         for(S2CellId s2CellId : cellIdArrayList) {
-            if(s2CellId.level() < granularity) {
-                granularity = s2CellId.level();
-            }
+            levelSum = levelSum + s2CellId.level();
         }
-        return granularity + 1;
+        return Math.round(levelSum / cellIdArrayList.size()) + 2;
     }
 
     public static int getGranularity(S2Cap s2Cap) {
         // 生成region cover
         ArrayList<S2CellId> cellIdArrayList = new ArrayList<>();
         regionCoverer.getCovering(s2Cap, cellIdArrayList);
-        // 以cover中的最小级+1作为我们后续point所处cell的粒度
-        int granularity = Integer.MAX_VALUE;
+        // 以cover中所有cellLevel的平均值作为我们后续point所处cell的粒度
+        float levelSum = 0;
         for(S2CellId s2CellId : cellIdArrayList) {
-            if(s2CellId.level() < granularity) {
-                granularity = s2CellId.level();
-            }
+            levelSum = levelSum + s2CellId.level();
         }
-        return granularity + 1;
+        return Math.round(levelSum / cellIdArrayList.size()) + 2;
     }
 
     public static int getThetaWindow(double theta) {

@@ -16,7 +16,7 @@ import java.util.Optional;
 /*
 最短路径计算器
  */
-public class PathCalculator {
+public strictfp class PathCalculator {
     public static final Logger logger = LoggerFactory.getLogger(PathCalculator.class);
     // openMap需要存储节点，因为节点的相关信息在计算时是要使用的
     public HashMap<String, Node> openMap;
@@ -63,8 +63,8 @@ public class PathCalculator {
         // -----
 
         //---test
-        double total = 0;
-        double better = 0;
+//        double total = 0;
+//        double better = 0;
         //---
         // -----算法开始
         while (!currentNode.dataIndex.equals(goalID)) {
@@ -82,7 +82,7 @@ public class PathCalculator {
                         heuristics = eDistance;
                     }
                     // --- test begin
-                    total += 1;
+//                    total += 1;
 //                    double distance = getDistance(node , goal);
 //                    if (heuristics > distance) {
 //                        logger.info("h:" + heuristics + "   d:" + distance);
@@ -124,7 +124,8 @@ public class PathCalculator {
 //        logger.info("加速比例:" + String.valueOf(better / total) + "   total:" + total + "   resultSize:" + resultList.size()
 //        + "   openMapSize:" + openMap.size() + "   closeMap:" + closeMap.size() + "   length:" +
 //                getDistance(new Node("1", query.source, 0.0), query.target));
-        logger.info("landmark:" + String.valueOf(total) + "   query:" + query.sourceID);
+//        logger.info("landmark:" + String.valueOf(total) + "   query:" + query.sourceID);
+//        logger.info("landmark:" + String.valueOf(resultList));
         return resultList;
     }
 
@@ -139,13 +140,13 @@ public class PathCalculator {
         S2Point goal = query.target;
         // -----
 
-        double total = 0;
+//        double total = 0;
         // ----- 算法开始
         while (!currentNode.dataIndex.equals(goalID)) {
             for (Node node : TopologyGraph.getUnclosedLinkedNode(currentNode, closeMap)) {
                 if (!openMap.containsKey(node.dataIndex)) {
                     double heuristics = getDistance(node, goal);
-                    total += 1;
+//                    total += 1;
                     node.total = node.gCost + heuristics;
                     node.parent = currentNode;
                     openMap.put(node.dataIndex, node);
@@ -176,7 +177,8 @@ public class PathCalculator {
             resultList.add(currentNode.dataIndex);
             currentNode = currentNode.parent;
         }
-        logger.info("A*:" + String.valueOf(total) + "   query:" + query.sourceID);
+//        logger.info("A*:" + String.valueOf(total) + "   query:" + query.sourceID);
+//        logger.info("A*:" + String.valueOf(resultList));
         return resultList;
     }
 
@@ -253,6 +255,7 @@ public class PathCalculator {
         return source.position.getDistance2(target);
     }
 
+    // 邻接表中weight以0.1m为单位
     private double getDistance(Node source, S2Point target) {
         S1Angle s1Angle = new S1Angle(source.position, target);
         return s1Angle.distance(63710000);

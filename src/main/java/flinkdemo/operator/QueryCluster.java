@@ -134,7 +134,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         }
 
         if (removeClusterList.size() > 0) {
-//            logger.info(removeClusterList.toString());
+            logger.info(removeClusterList.toString());
             // 直接删除对应元素并对状态进行更新
             mergeList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
             clusterListState.update(mergeList);

@@ -25,14 +25,16 @@ public strictfp class MyEllipse implements S2Region {
     // 椭球体的焦点
     public final S2Point focusS;
     public final S2Point focusT;
+    public final S2Point axis;
 
     public MyEllipse() {
         this.majorEndPointS = new S2Point();
         this.majorEndPointT = new S2Point();
-        this.e = 0.5;
+        this.e = 0.8;
         this.constant = majorEndPointS.getDistance(majorEndPointT);
         this.focusS = new S2Point();
         this.focusT = new S2Point();
+        this.axis = majorEndPointS.add(majorEndPointT).normalize();
     }
 
     public MyEllipse(S2Point source, S2Point target, double e) {
@@ -40,9 +42,12 @@ public strictfp class MyEllipse implements S2Region {
         this.majorEndPointT = target;
         this.e = e;
         this.constant = majorEndPointS.getDistance(majorEndPointT);
+        // 在S和T所处平面上的中点
         S2Point axisInPlan = majorEndPointS.add(majorEndPointT).mul(0.5);
         this.focusS = majorEndPointS.sub(majorEndPointT).mul(e / 2).add(axisInPlan);
         this.focusT = majorEndPointT.sub(majorEndPointS).mul(e / 2).add(axisInPlan);
+        // 在球面上的真正中点
+        this.axis = majorEndPointS.add(majorEndPointT).normalize();
     }
     /*
     此函数在获取初始candidate时，负责快速获得初始候选cell(重要)
@@ -50,7 +55,6 @@ public strictfp class MyEllipse implements S2Region {
     @Override
     public S2Cap getCapBound() {
         // 两个长半轴端点的中点作为axis,到中点的距离作为cap半径
-        S2Point axis = majorEndPointS.add(majorEndPointT).normalize();
         return S2Cap.fromAxisChord(axis, new S1ChordAngle(majorEndPointS, axis));
     }
 
@@ -100,7 +104,6 @@ public strictfp class MyEllipse implements S2Region {
     @Override
     public boolean mayIntersect(S2Cell cell) {
         // cell很大,直接包含了我们的中心轴，那么不用接下去的计算，返回true
-        S2Point axis = majorEndPointS.add(majorEndPointT).normalize();
         if (cell.contains(axis)) {
             return true;
         }

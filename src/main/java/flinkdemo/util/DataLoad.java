@@ -47,6 +47,7 @@ public class DataLoad {
         grLines.forEach(ele -> {
             String[] arr = ele.split("\\s+");
             if (arr[0].equals("a")) {
+                // 注意：以下是最初想法，但是！！错误！！的，因为和的平方大于平方和，所以会导致eDistance >> heuristics
                 // 距离数据集中，距离是球面距离且以0.1m作为基础单位，所以我们除10000，后面用1km作为基础单位
                 // 同时经过我们验证，数据集采用地球半径6371km计算得到整数精确度的球面距离作为gr文件中的距离
                 // 所以在我们的拓扑网络中，与S2Point保持一致，均使用单位球体，即再除6371完成归一化
