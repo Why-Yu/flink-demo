@@ -99,6 +99,10 @@ public class Query implements Serializable {
         this.clusterID = clusterID;
     }
 
+    public double getDistance() {
+        return source.getDistance(target);
+    }
+
     @Override
     public String toString() {
         return "Query{" +

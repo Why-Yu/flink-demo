@@ -78,6 +78,10 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         for(Cluster cluster : clusterListState.get()) {
             if (queryInCluster(query, cluster, s2RegionCoverer)) {
                 query.setClusterID(cluster.clusterID);
+                // 如果query长度大于所属聚簇椭圆的a，则设为可缓存的
+                if (query.getDistance() > 0.5 * cluster.boundEllipse.constant) {
+                    query.setCacheable(true);
+                }
                 collector.collect(query);
                 break;
             }
@@ -90,6 +94,8 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             Cluster cluster = new Cluster(clusterID, query.getSource(), query.getTarget(), eccentricity);
             clusterListState.add(cluster);
             query.setClusterID(clusterID);
+            // 创建此cluster的query总是cacheable
+            query.setCacheable(true);
             IDSupplierState.update(countID + 1);
             collector.collect(query);
         }

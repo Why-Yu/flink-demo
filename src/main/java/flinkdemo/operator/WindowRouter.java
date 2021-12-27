@@ -106,9 +106,11 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
         } else {
             // 最开始设置的值是1.6 * average但是这样貌似要填充完一个cache要花费好长时间
             // 所以我们把阈值设小一些，好让cache快点填充完毕，代价是后续算子每个query需要多几次比较来查看是否可以add cache
-            if (distance > average) {
-                query.setCacheable(true);
-            }
+            // 注意！！错误！！cacheable应该根据query所属的cluster大小来决定，而不是所有query的平均大小
+            // 不然小cluster中，就会一直没有缓存
+//            if (distance > average) {
+//                query.setCacheable(true);
+//            }
             collector.collect(query);
         }
 

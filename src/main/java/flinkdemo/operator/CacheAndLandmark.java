@@ -1,5 +1,7 @@
 package flinkdemo.operator;
 
+import com.google.common.geometry.S2LatLng;
+import com.google.common.geometry.S2Point;
 import flinkdemo.entity.Path;
 import flinkdemo.entity.Query;
 import flinkdemo.util.PathCalculator;
@@ -26,7 +28,7 @@ import java.util.*;
 1、cache的构建与匹配(inverted map)
 2、cache更新(基于LFU-aging)与废弃
 3、基于localLandmark的ALT计算
-奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有13个状态，总觉得不太好
+奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有15个状态，总觉得不太好
  */
 public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String> {
     public static final Logger logger = LoggerFactory.getLogger(CacheAndLandmark.class);
@@ -67,8 +69,11 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private transient ValueState<Integer> IDSupplierState;
 
     // --- localLandmark
-    // localLandmark表，提供A*算法中，更tighter的lower bound，让最短路径算法的搜索空间尽可能小
-    private transient MapState<String, Double> landmarkState;
+    // localLandmark表，两个local landmark 提供A*算法中，更tighter的lower bound，让最短路径算法的搜索空间尽可能小
+    private transient MapState<String, Double> sourceLandmarkState;
+    private transient MapState<String, Double> targetLandmarkState;
+    // owner Cluster，存储当前聚簇的起终点，用于匹配两个landmark中较好的那一个
+    private transient ValueState<Tuple2<S2Point, S2Point>> ownerClusterState;
 
     // --- hit ratio
     // 统计当前聚簇下的query总数，提供后续hit ratio计算
@@ -111,8 +116,12 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         ValueStateDescriptor<Integer> IDSupplierStateDescriptor = new ValueStateDescriptor<Integer>("caAndLaIDSupplier", Types.INT, 1);
 
         // landmark
-        MapStateDescriptor<String, Double> landmarkStateDescriptor = new MapStateDescriptor<>("landmark",
+        MapStateDescriptor<String, Double> sourceLandmarkStateDescriptor = new MapStateDescriptor<>("sourceLandmark",
                 TypeInformation.of(String.class), Types.DOUBLE);
+        MapStateDescriptor<String, Double> targetLandmarkStateDescriptor = new MapStateDescriptor<>("targetLandmark",
+                TypeInformation.of(String.class), Types.DOUBLE);
+        ValueStateDescriptor<Tuple2<S2Point, S2Point>> ownerClusterStateDescriptor = new ValueStateDescriptor<>("ownerCluster",
+                TypeInformation.of(new TypeHint<Tuple2<S2Point, S2Point>>() {}));
 
         // hit ratio & abandoned
         ValueStateDescriptor<Integer> queryNumberStateDescriptor = new ValueStateDescriptor<>("queryNumber", Types.INT, 0);
@@ -129,7 +138,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         winnersSizeState = getRuntimeContext().getState(winnersSizeStateDescriptor);
         candidatesSizeState = getRuntimeContext().getState(candidatesSizeStateDescriptor);
         IDSupplierState = getRuntimeContext().getState(IDSupplierStateDescriptor);
-        landmarkState = getRuntimeContext().getMapState(landmarkStateDescriptor);
+        sourceLandmarkState = getRuntimeContext().getMapState(sourceLandmarkStateDescriptor);
+        targetLandmarkState = getRuntimeContext().getMapState(targetLandmarkStateDescriptor);
+        ownerClusterState = getRuntimeContext().getState(ownerClusterStateDescriptor);
         queryNumberState = getRuntimeContext().getState(queryNumberStateDescriptor);
         immutabilityCountState = getRuntimeContext().getState(immutabilityCountStateDescriptor);
         abandonedCountState = getRuntimeContext().getState(abandonedCountStateDescriptor);
@@ -163,7 +174,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             isMatched = cacheMatch(candidatesVertexState, query, matchResult);
             //如果候选者组还是没有匹配到，说明缓存未命中，使用ALLT算法开始计算最短路径
             if (!isMatched) {
-                pathSequence = ALLT(query, landmarkState);
+                pathSequence = ALLT(query, sourceLandmarkState, targetLandmarkState);
             } else { //候选者组匹配到了，获取path sequence(候选者组的hit不算在hit ratio中)
                 pathSequence = getSubPath(candidatesPathState, matchResult);
             }
@@ -296,7 +307,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             winnersSizeState.clear();
             candidatesSizeState.clear();
             IDSupplierState.clear();
-            landmarkState.clear();
+            sourceLandmarkState.clear();
+            targetLandmarkState.clear();
+            ownerClusterState.clear();
             queryNumberState.clear();
             immutabilityCountState.clear();
             abandonedCountState.clear();
@@ -368,34 +381,64 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     逻辑为，当前聚簇的第一个请求执行麻烦但搜索空间大的计算，以生成landmark
     在可能的情况下，尽量使用local landmark(并在内部也尽一切可能使用landmark来生成lower bound)，如果没法使用，回退到A*逃生
      */
-    private List<String> ALLT(Query query, MapState<String, Double> landmarkState) throws Exception {
+    private List<String> ALLT(Query query, MapState<String, Double> sourceLandmarkState,
+                              MapState<String, Double> targetLandmarkState) throws Exception {
         PathCalculator pathCalculator = new PathCalculator();
-        List<String> resultList;
         // landmarkState为空，说明是当前cluster下的第一个representative query
         // 需要执行更耗费时间的Dijkstra计算生成更全面的local landmark并赋值
-        if (landmarkState.isEmpty()) {
-            resultList = pathCalculator.getDijkstraShortestPath(query);
-            HashMap<String, Double> landmarkHashMap = pathCalculator.getCloseMap();
+        if (sourceLandmarkState.isEmpty()) {
+            // 存储所属cluster的相关信息
+            ownerClusterState.update(Tuple2.of(query.source, query.target));
+            // 计算得到结果
+            List<String> resultList = pathCalculator.getDijkstraShortestPath(query);
+            HashMap<String, Double> sourceLandmarkHashMap = pathCalculator.getCloseMap();
             // representative query的closeMap刚好是作为我们的landmark
-            landmarkState.putAll(landmarkHashMap);
-        } else if (!landmarkState.contains(query.targetID) && !landmarkState.contains(query.sourceID)) {
-            // 如果landmark中都不包含query的起终点，那么我们无法利用三角不等式生成lower bound，则回退到A*
-//            logger.info("A*");
+            // 记得先putAll再算下一个landmark，不然closeMap会被清空
+            sourceLandmarkState.putAll(sourceLandmarkHashMap);
+
+            query.setSource(query.target);
+            query.setTarget(ownerClusterState.value().f0);
+            pathCalculator.getDijkstraShortestPath(query);
+            HashMap<String, Double> targetLandmarkHashMap = pathCalculator.getCloseMap();
+            targetLandmarkState.putAll(targetLandmarkHashMap);
+            return resultList;
+        }
+
+        // 计算用那一个landmark更加合适
+        boolean isSource = chooseLandmark(query, ownerClusterState);
+        if (isSource) {
+            return getLandmarkShortestPath(query, sourceLandmarkState, pathCalculator);
+        } else {
+           return getLandmarkShortestPath(query, targetLandmarkState, pathCalculator);
+        }
+    }
+
+    /*
+    进一步判断是否需要回退到A*逃生，以及选择具体的搜索方向
+    (由于S到T和T到S实际上是等价的，都包含的情况下选择哪一个都一样
+    所以我们主要是考虑，landmark只包含了其中一个点的情况，选择包含的点作为实际的起始搜索点)
+     */
+    private List<String> getLandmarkShortestPath(Query query, MapState<String, Double> landmarkState,
+                                                 PathCalculator pathCalculator) throws Exception {
+        List<String> resultList;
+        // 如果landmark中都不包含query的起终点，那么我们无法利用三角不等式生成lower bound，则回退到A*
+        if (!landmarkState.contains(query.targetID) && !landmarkState.contains(query.sourceID)) {
             resultList = pathCalculator.getAstarShortestPath(query);
-        } else { // 说明已经拥有landmark表，并且可以利用landmark生成tighter lower bound 执行更快速的local landmark计算
-            // 大部分无法命中缓存的query都是在这里实际解决的，前面判断是解决极少数特殊情况
-            // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
-//            logger.info("ALLT");
-            if (landmarkState.contains(query.targetID)) {
-                resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
-//                pathCalculator.getAstarShortestPath(query);
-            } else {
-                resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, false);
-//                pathCalculator.getAstarShortestPath(query);
-            }
+        // 可以利用landmark生成tighter lower bound 执行更快速的local landmark计算
+        // 大部分无法命中缓存的query都是在这里实际解决的
+        // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
+        } else if (landmarkState.contains(query.targetID)) {
+            resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
+            pathCalculator.getAstarShortestPath(query);
+        } else {
+            resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, false);
+            S2Point temp = query.target;
+            query.setTarget(query.source);
+            query.setSource(temp);
+            pathCalculator.getAstarShortestPath(query);
         }
         return resultList;
-    }
+     }
 
     /*
     提供把路径序列添加进缓存的功能
@@ -422,5 +465,37 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             }
             sequencePos++;
         }
+    }
+
+    /*
+    根据landmark behind query的程度，选择更适合的landmark
+     */
+    private boolean chooseLandmark(Query query, ValueState<Tuple2<S2Point, S2Point>> ownerClusterState) throws Exception {
+        // 形成四个点的墨卡托投影经纬度
+        S2LatLng s2LatLngS = new S2LatLng(ownerClusterState.value().f0);
+        S2LatLng s2LatLngT = new S2LatLng(ownerClusterState.value().f1);
+        S2LatLng s2LatLngQueryS = new S2LatLng(query.source);
+        S2LatLng s2LatLngQueryT = new S2LatLng(query.target);
+
+        // 计算向量值
+        S2LatLng sToQueryS = s2LatLngS.sub(s2LatLngQueryS);
+        S2LatLng sToQueryT = s2LatLngS.sub(s2LatLngQueryT);
+        S2LatLng tToQueryS = s2LatLngT.sub(s2LatLngQueryS);
+        S2LatLng tToQueryT = s2LatLngT.sub(s2LatLngQueryT);
+
+        // 计算cluster.s还是cluster.t更和query S T更近似一条直线
+        double sCosQuery = getAbsCos(sToQueryS, sToQueryT);
+        double tCosQuery = getAbsCos(tToQueryS, tToQueryT);
+        return sCosQuery > tCosQuery;
+    }
+
+    /*
+    获取角度cos的绝对值
+     */
+    private double getAbsCos(S2LatLng s2LatLngS, S2LatLng s2LatLngT) {
+        double dotProd = s2LatLngS.lngRadians() * s2LatLngT.lngRadians() + s2LatLngS.latRadians() * s2LatLngT.latRadians();
+        double normS = Math.sqrt(Math.pow(s2LatLngS.lngRadians(), 2) + Math.pow(s2LatLngS.latRadians(), 2));
+        double normT = Math.sqrt(Math.pow(s2LatLngT.lngRadians(), 2) + Math.pow(s2LatLngT.latRadians(), 2));
+        return Math.abs(dotProd / (normS * normT));
     }
 }

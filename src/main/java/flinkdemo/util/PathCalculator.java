@@ -41,20 +41,20 @@ public strictfp class PathCalculator {
             refresh();
         }
         // ----- 初始化工作
-        List<String> resultList = new ArrayList<>(100);
+        List<String> resultList = new ArrayList<>(200);
         Node currentNode;
-        double endDistance;
+        double viewDistance;
         String goalID;
         S2Point goal;
         // 如果是true，表明以target作为搜索终点，则初始当前节点为source
         if (direction) {
-            endDistance = landmarkState.get(query.targetID);
+            viewDistance = landmarkState.get(query.targetID);
             goalID = query.targetID;
             goal = query.target;
             currentNode = new Node(query.sourceID, query.source, 0.0);
             closeMap.put(query.sourceID, 0.0);
         } else { //否则以source作为搜索终点
-            endDistance = landmarkState.get(query.sourceID);
+            viewDistance = landmarkState.get(query.sourceID);
             goalID = query.sourceID;
             goal = query.source;
             currentNode = new Node(query.targetID, query.target, 0.0);
@@ -76,7 +76,7 @@ public strictfp class PathCalculator {
                     // 不为null，计算lower bound，否则使用三维直线距离当作逃生，计算lower bound
                     // Math.abs的本质是Math.max(d(l, a) - d(l, b), d(l, b) - d(l, a))
                     double eDistance = getDistance(node, goal);
-                    double heuristics = opt.map(distance -> Math.abs(endDistance - distance))
+                    double heuristics = opt.map(distance -> Math.abs(viewDistance - distance))
                             .orElseGet(() -> eDistance);
                     if (heuristics < eDistance) {
                         heuristics = eDistance;
