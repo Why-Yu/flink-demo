@@ -125,7 +125,7 @@ public strictfp class PathCalculator {
 //        + "   openMapSize:" + openMap.size() + "   closeMap:" + closeMap.size() + "   length:" +
 //                getDistance(new Node("1", query.source, 0.0), query.target));
 //        logger.info("landmark:" + String.valueOf(total) + "   query:" + query.sourceID);
-//        logger.info("landmark:" + String.valueOf(resultList));
+//        logger.info("landmark resolve");
         return resultList;
     }
 

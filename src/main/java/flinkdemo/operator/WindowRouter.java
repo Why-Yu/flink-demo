@@ -143,9 +143,9 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
                     S1ChordAngle.fromLength2(latestAverage / 16));
             int granularity = TopologyGraph.getGranularity(s2Cap);
             ParametersPasser.setGranularity(granularity);
-            if (context.getCurrentKey() == 1) {
-                logger.info("average更新:" + average + ",granularity更新" + granularity);
-            }
+//            if (context.getCurrentKey() == 1) {
+//                logger.info("average更新:" + average + ",granularity更新" + granularity);
+//            }
         }
     }
 

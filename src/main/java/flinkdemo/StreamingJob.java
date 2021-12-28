@@ -20,6 +20,7 @@ package flinkdemo;
 
 import flinkdemo.entity.Query;
 import flinkdemo.operator.CacheAndLandmark;
+import flinkdemo.operator.MiniResolver;
 import flinkdemo.operator.QueryCluster;
 import flinkdemo.operator.WindowRouter;
 import flinkdemo.source.MySyntheticSource;
@@ -76,12 +77,13 @@ public class StreamingJob {
 						.process(new CacheAndLandmark(parameterTool.getInt("localCache.winners.MaxSize"),
 								parameterTool.getInt("localCache.candidates.MaxSize"),
 								parameterTool.getInt("localCache.convergence"),
-								parameterTool.getDouble("localCache.negligible")));
+								parameterTool.getDouble("localCache.negligible"),
+								parameterTool.getInt("localCache.abandon")));
 //
-//		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
+		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 
 //		landmarkResultDataStream.print();
-//		preparedDataStream.print();
+//		miniResultDataStream.print();
 
 		// execute program
 		env.execute("test");

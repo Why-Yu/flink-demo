@@ -236,7 +236,7 @@ public strictfp class TopologyGraph {
         for(S2CellId s2CellId : cellIdArrayList) {
             levelSum = levelSum + s2CellId.level();
         }
-        return Math.round(levelSum / cellIdArrayList.size()) + 2;
+        return Math.round(levelSum / cellIdArrayList.size()) + 1;
     }
 
     public static int getGranularity(S2Cap s2Cap) {
@@ -248,7 +248,7 @@ public strictfp class TopologyGraph {
         for(S2CellId s2CellId : cellIdArrayList) {
             levelSum = levelSum + s2CellId.level();
         }
-        return Math.round(levelSum / cellIdArrayList.size()) + 2;
+        return Math.round(levelSum / cellIdArrayList.size()) + 1;
     }
 
     public static int getThetaWindow(double theta) {

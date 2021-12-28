@@ -1,7 +1,6 @@
 package flinkdemo.operator;
 
 import com.google.common.geometry.S2LatLng;
-import com.google.common.geometry.S2Point;
 import flinkdemo.entity.Path;
 import flinkdemo.entity.Query;
 import flinkdemo.util.PathCalculator;
@@ -28,7 +27,7 @@ import java.util.*;
 1、cache的构建与匹配(inverted map)
 2、cache更新(基于LFU-aging)与废弃
 3、基于localLandmark的ALT计算
-奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有15个状态，总觉得不太好
+奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有16个状态，总觉得不太好
  */
 public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String> {
     public static final Logger logger = LoggerFactory.getLogger(CacheAndLandmark.class);
@@ -43,14 +42,16 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 //            .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
 //            .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
 //            .build();
-
+    // 注册的计时器时间窗口
     private static final long THIRTY_SECONDS = 30 * 1000;
-
+    // 为防止计时器在某一个时刻集中运行，利用随机数制造一个时间小偏差
+    private static final Random random = new Random();
     // 关于localCache的一些可设置参数，具体解释见myJob.properties
     private final int winnersMaxSize;
     private final int candidatesMaxSize;
     private final int convergence;
     private final double negligible;
+    private final int abandon;
 
     // --- localCache
     // localCache中的胜者组，其与历史query有较强的联系
@@ -72,8 +73,8 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     // localLandmark表，两个local landmark 提供A*算法中，更tighter的lower bound，让最短路径算法的搜索空间尽可能小
     private transient MapState<String, Double> sourceLandmarkState;
     private transient MapState<String, Double> targetLandmarkState;
-    // owner Cluster，存储当前聚簇的起终点，用于匹配两个landmark中较好的那一个
-    private transient ValueState<Tuple2<S2Point, S2Point>> ownerClusterState;
+    // owner Cluster，存储创建当前cluster的query，既为合格之后创建landmark制造条件，又为匹配最佳landmark提供数据
+    private transient ValueState<Query> ownerClusterState;
 
     // --- hit ratio
     // 统计当前聚簇下的query总数，提供后续hit ratio计算
@@ -88,12 +89,15 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     // --- Timer
     // 开启计时器，开始cache update
     private transient ValueState<Boolean> firstState;
+    // 检验一个cluster是否合格的cluster(必须要有一定数量的query进入这个cluster才算做合格，不然直接开启计时器或导致存在几百个计时器，大量耗费资源)
+    private transient ValueState<Integer> qualifiedState;
 
-    public CacheAndLandmark(int winnersMaxSize, int candidatesMaxSize, int convergence, double negligible) {
+    public CacheAndLandmark(int winnersMaxSize, int candidatesMaxSize, int convergence, double negligible, int abandon) {
         this.winnersMaxSize = winnersMaxSize;
         this.candidatesMaxSize = candidatesMaxSize;
         this.convergence = convergence;
         this.negligible = negligible;
+        this.abandon = abandon;
     }
 
     @Override
@@ -120,8 +124,8 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 TypeInformation.of(String.class), Types.DOUBLE);
         MapStateDescriptor<String, Double> targetLandmarkStateDescriptor = new MapStateDescriptor<>("targetLandmark",
                 TypeInformation.of(String.class), Types.DOUBLE);
-        ValueStateDescriptor<Tuple2<S2Point, S2Point>> ownerClusterStateDescriptor = new ValueStateDescriptor<>("ownerCluster",
-                TypeInformation.of(new TypeHint<Tuple2<S2Point, S2Point>>() {}));
+        ValueStateDescriptor<Query> ownerClusterStateDescriptor = new ValueStateDescriptor<>("ownerCluster",
+                Query.class);
 
         // hit ratio & abandoned
         ValueStateDescriptor<Integer> queryNumberStateDescriptor = new ValueStateDescriptor<>("queryNumber", Types.INT, 0);
@@ -129,7 +133,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         ValueStateDescriptor<Integer> abandonedCountStateDescriptor = new ValueStateDescriptor<>("abandonedCount", Types.INT, 0);
         ValueStateDescriptor<Double> priorHitRatioStateDescriptor = new ValueStateDescriptor<>("priorHitRatio", Types.DOUBLE, 0.0);
 
+        // Timer
         ValueStateDescriptor<Boolean> firstStateDescriptor = new ValueStateDescriptor<>("caAndLaFirst", Types.BOOLEAN, true);
+        ValueStateDescriptor<Integer> qualifiedStateDescriptor = new ValueStateDescriptor<>("qualified", Types.INT, 0);
 
         winnersPathState = getRuntimeContext().getMapState(winnersPathStateDescriptor);
         winnersVertexState = getRuntimeContext().getMapState(winnersVertexStateDescriptor);
@@ -146,20 +152,35 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         abandonedCountState = getRuntimeContext().getState(abandonedCountStateDescriptor);
         priorHitRatioState = getRuntimeContext().getState(priorHitRatioStateDescriptor);
         firstState = getRuntimeContext().getState(firstStateDescriptor);
+        qualifiedState = getRuntimeContext().getState(qualifiedStateDescriptor);
     }
 
     @Override
     public void processElement(Query query, Context context, Collector<String> collector) throws Exception {
-        // 第一次注册cache update计时器
+        // 判断是否已经注册计时器
         if (firstState.value()) {
-//            logger.info(context.getCurrentKey() + "cluster注册计时器");
-            firstState.update(false);
-            long timer = context.timerService().currentProcessingTime();
-            context.timerService().registerProcessingTimeTimer(timer + THIRTY_SECONDS);
+            // 真正的这个clusterID下的第一次请求
+            if (qualifiedState.value() == 0) {
+                // 存储所属cluster的相关信息
+                ownerClusterState.update(query);
+                qualifiedState.update(qualifiedState.value() + 1);
+            // 小于10次query说明现在的cluster还没合格呢，很可能马上会被淘汰，不着急注册计时器的(目的是防止注册大量无用计时器)
+            } else if (qualifiedState.value() < 10) {
+                qualifiedState.update(qualifiedState.value() + 1);
+            // cluster合格了，说明可能是一个需要使用的cluster而不是马上被淘汰的那种
+            } else {
+                logger.info(context.getCurrentKey() + "cluster注册计时器");
+                firstState.update(false);
+                long timer = context.timerService().currentProcessingTime();
+                long timeOffset = random.nextInt(3 * 1000) - 1500;
+                context.timerService().registerProcessingTimeTimer(timer + THIRTY_SECONDS + timeOffset);
+            }
+        } else {
+            // 请求计数加一(只有已经注册过计时器的才可以统计queryNumber)
+            int queryNumber = queryNumberState.value();
+            queryNumberState.update(queryNumber + 1);
         }
-        // 请求计数加一
-        int queryNumber = queryNumberState.value();
-        queryNumberState.update(queryNumber + 1);
+
         // ---核心计算部分(最后输出节点ID序列字符串)
         // ---cache匹配阶段，根据inverted map得到具体是哪一个路径缓存及其在路径序列上的位置，先计算胜者组缓存匹配，这是概率最大的位置
         // 三个参数的含义(pathID, 在路径序列中的起始位置, 在路径序列中的终止位置)
@@ -174,7 +195,13 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             isMatched = cacheMatch(candidatesVertexState, query, matchResult);
             //如果候选者组还是没有匹配到，说明缓存未命中，使用ALLT算法开始计算最短路径
             if (!isMatched) {
-                pathSequence = ALLT(query, sourceLandmarkState, targetLandmarkState);
+                // 只有注册了计时器，才可以使用ALLT算法，不然生成的landmark以及cache永远无法消除，但是很可能又是没用的
+                if (firstState.value()) {
+                    PathCalculator pathCalculator = new PathCalculator();
+                    pathSequence = pathCalculator.getAstarShortestPath(query);
+                } else {
+                    pathSequence = ALLT(query, sourceLandmarkState, targetLandmarkState);
+                }
             } else { //候选者组匹配到了，获取path sequence(候选者组的hit不算在hit ratio中)
                 pathSequence = getSubPath(candidatesPathState, matchResult);
             }
@@ -220,7 +247,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
         // 两个都不是空的，就进行缓存的更新(1、胜者组候选者组的交换 ； 2、候选者组清空 ； 3、胜者组所有count被重置为0)
         double hitNumber = 0;
-        logger.info(ctx.getCurrentKey() + "的query number:" +queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
+//        logger.info(ctx.getCurrentKey() + "的query number:" +queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
         // cache起码要拥有一些数据再进行update计算
         if (!winnersPathState.isEmpty() && !candidatesPathState.isEmpty()) {
             Path outPath = new Path(-1);
@@ -298,7 +325,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         }
 
         // 如果cluster被遗弃了，所有状态无需再保存，清除当前key下所有状态，以减少内存使用
-        if (abandonedCountState.value() >= convergence - 6) {
+        if (abandonedCountState.value() >= abandon) {
             logger.info(ctx.getCurrentKey() + "已被遗弃");
             winnersPathState.clear();
             winnersVertexState.clear();
@@ -315,9 +342,11 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             abandonedCountState.clear();
             priorHitRatioState.clear();
             firstState.clear();
-            // 当cluster既未收敛又未遗弃时，再注册下一个时间窗口的计时器
+        // 当cluster既未收敛又未遗弃时，再注册下一个时间窗口的计时器
         } else if (immutabilityCountState.value() < convergence) {
-            ctx.timerService().registerProcessingTimeTimer(timestamp + THIRTY_SECONDS);
+            // 加一个时间小偏差，防止大量的计时器在某一个时刻集中运行(在程序刚开始运行时会有大量计时器注册)
+            long timeOffset = random.nextInt(3 * 1000) - 1500;
+            ctx.timerService().registerProcessingTimeTimer(timestamp + THIRTY_SECONDS + timeOffset);
         }
     }
 
@@ -384,24 +413,23 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private List<String> ALLT(Query query, MapState<String, Double> sourceLandmarkState,
                               MapState<String, Double> targetLandmarkState) throws Exception {
         PathCalculator pathCalculator = new PathCalculator();
-        // landmarkState为空，说明是当前cluster下的第一个representative query
-        // 需要执行更耗费时间的Dijkstra计算生成更全面的local landmark并赋值
+        // landmarkState为空，说明是当前cluster合格以后的第一个query
+        // 需要对representative query执行更耗费时间的Dijkstra计算生成更全面的local landmark并赋值
         if (sourceLandmarkState.isEmpty()) {
-            // 存储所属cluster的相关信息
-            ownerClusterState.update(Tuple2.of(query.source, query.target));
+            // 获得representative query生成local landmark
+            Query representativeQuery = ownerClusterState.value();
             // 计算得到结果
-            List<String> resultList = pathCalculator.getDijkstraShortestPath(query);
+            pathCalculator.getDijkstraShortestPath(representativeQuery);
             HashMap<String, Double> sourceLandmarkHashMap = pathCalculator.getCloseMap();
             // representative query的closeMap刚好是作为我们的landmark
             // 记得先putAll再算下一个landmark，不然closeMap会被清空
             sourceLandmarkState.putAll(sourceLandmarkHashMap);
-
-            query.setSource(query.target);
-            query.setTarget(ownerClusterState.value().f0);
-            pathCalculator.getDijkstraShortestPath(query);
+            // 获得相反方向的representativeQuery
+            Query oppositeQuery = new Query(representativeQuery.targetID, representativeQuery.sourceID,
+                    representativeQuery.target, representativeQuery.source);
+            pathCalculator.getDijkstraShortestPath(oppositeQuery);
             HashMap<String, Double> targetLandmarkHashMap = pathCalculator.getCloseMap();
             targetLandmarkState.putAll(targetLandmarkHashMap);
-            return resultList;
         }
 
         // 计算用那一个landmark更加合适
@@ -429,13 +457,13 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
         } else if (landmarkState.contains(query.targetID)) {
             resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
-            pathCalculator.getAstarShortestPath(query);
+//            pathCalculator.getAstarShortestPath(query);
         } else {
             resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, false);
-            S2Point temp = query.target;
-            query.setTarget(query.source);
-            query.setSource(temp);
-            pathCalculator.getAstarShortestPath(query);
+//            S2Point temp = query.target;
+//            query.setTarget(query.source);
+//            query.setSource(temp);
+//            pathCalculator.getAstarShortestPath(query);
         }
         return resultList;
      }
@@ -470,10 +498,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     /*
     根据landmark behind query的程度，选择更适合的landmark
      */
-    private boolean chooseLandmark(Query query, ValueState<Tuple2<S2Point, S2Point>> ownerClusterState) throws Exception {
+    private boolean chooseLandmark(Query query, ValueState<Query> ownerClusterState) throws Exception {
         // 形成四个点的墨卡托投影经纬度
-        S2LatLng s2LatLngS = new S2LatLng(ownerClusterState.value().f0);
-        S2LatLng s2LatLngT = new S2LatLng(ownerClusterState.value().f1);
+        S2LatLng s2LatLngS = new S2LatLng(ownerClusterState.value().source);
+        S2LatLng s2LatLngT = new S2LatLng(ownerClusterState.value().target);
         S2LatLng s2LatLngQueryS = new S2LatLng(query.source);
         S2LatLng s2LatLngQueryT = new S2LatLng(query.target);
 

@@ -34,6 +34,13 @@ public class Query implements Serializable {
         this.targetID = targetID;
     }
 
+    public Query(String sourceID, String targetID, S2Point source, S2Point target) {
+        this.sourceID = sourceID;
+        this.targetID = targetID;
+        this.source = source;
+        this.target = target;
+    }
+
 
     public int getPartition() {
         return partition;
