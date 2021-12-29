@@ -27,7 +27,7 @@ import java.util.*;
 1、cache的构建与匹配(inverted map)
 2、cache更新(基于LFU-aging)与废弃
 3、基于localLandmark的ALT计算
-奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有16个状态，总觉得不太好
+奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有17个状态，总觉得不太好
  */
 public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String> {
     public static final Logger logger = LoggerFactory.getLogger(CacheAndLandmark.class);
@@ -43,7 +43,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 //            .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
 //            .build();
     // 注册的计时器时间窗口
-    private static final long THIRTY_SECONDS = 30 * 1000;
+    private static final long ONE_MINUTE = 60 * 1000;
     // 为防止计时器在某一个时刻集中运行，利用随机数制造一个时间小偏差
     private static final Random random = new Random();
     // 关于localCache的一些可设置参数，具体解释见myJob.properties
@@ -52,6 +52,8 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private final int convergence;
     private final double negligible;
     private final int abandon;
+    private final int qualified;
+    private final int hotCluster;
 
     // --- localCache
     // localCache中的胜者组，其与历史query有较强的联系
@@ -62,10 +64,12 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     // localCache中的候选者组，其与当前时间窗口下的query有较强的联系
     private transient MapState<Integer, Path> candidatesPathState;
     private transient MapState<String, ArrayList<Tuple2<Integer, Integer>>> candidatesVertexState;
-    // 当前胜者组的缓存大小
+    // 当前胜者组的现有缓存大小
     private transient ValueState<Integer> winnersSizeState;
-    // 当前候选者组的缓存大小
+    // 当前候选者组的现有缓存大小
     private transient ValueState<Integer> candidatesSizeState;
+    // 当前cluster的胜者组最大缓存容量
+    private transient ValueState<Integer> hotClusterSizeState;
     // ID提供器
     private transient ValueState<Integer> IDSupplierState;
 
@@ -92,12 +96,15 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     // 检验一个cluster是否合格的cluster(必须要有一定数量的query进入这个cluster才算做合格，不然直接开启计时器或导致存在几百个计时器，大量耗费资源)
     private transient ValueState<Integer> qualifiedState;
 
-    public CacheAndLandmark(int winnersMaxSize, int candidatesMaxSize, int convergence, double negligible, int abandon) {
+    public CacheAndLandmark(int winnersMaxSize, int candidatesMaxSize, int convergence, double negligible, int abandon,
+                            int qualified, int hotCluster) {
         this.winnersMaxSize = winnersMaxSize;
         this.candidatesMaxSize = candidatesMaxSize;
         this.convergence = convergence;
         this.negligible = negligible;
         this.abandon = abandon;
+        this.qualified = qualified;
+        this.hotCluster = hotCluster;
     }
 
     @Override
@@ -117,6 +124,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // cache size
         ValueStateDescriptor<Integer> winnersSizeStateDescriptor = new ValueStateDescriptor<>("winnersSize", Types.INT, 0);
         ValueStateDescriptor<Integer> candidatesSizeStateDescriptor = new ValueStateDescriptor<>("candidatesSize", Types.INT, 0);
+        ValueStateDescriptor<Integer> hotClusterSizeStateDescriptor = new ValueStateDescriptor<>("hotClusterSize", Types.INT, winnersMaxSize);
         ValueStateDescriptor<Integer> IDSupplierStateDescriptor = new ValueStateDescriptor<Integer>("caAndLaIDSupplier", Types.INT, 1);
 
         // landmark
@@ -143,6 +151,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         candidatesVertexState = getRuntimeContext().getMapState(candidatesVertexStateDescriptor);
         winnersSizeState = getRuntimeContext().getState(winnersSizeStateDescriptor);
         candidatesSizeState = getRuntimeContext().getState(candidatesSizeStateDescriptor);
+        hotClusterSizeState = getRuntimeContext().getState(hotClusterSizeStateDescriptor);
         IDSupplierState = getRuntimeContext().getState(IDSupplierStateDescriptor);
         sourceLandmarkState = getRuntimeContext().getMapState(sourceLandmarkStateDescriptor);
         targetLandmarkState = getRuntimeContext().getMapState(targetLandmarkStateDescriptor);
@@ -165,15 +174,15 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 ownerClusterState.update(query);
                 qualifiedState.update(qualifiedState.value() + 1);
             // 小于10次query说明现在的cluster还没合格呢，很可能马上会被淘汰，不着急注册计时器的(目的是防止注册大量无用计时器)
-            } else if (qualifiedState.value() < 10) {
+            } else if (qualifiedState.value() < qualified) {
                 qualifiedState.update(qualifiedState.value() + 1);
             // cluster合格了，说明可能是一个需要使用的cluster而不是马上被淘汰的那种
             } else {
                 logger.info(context.getCurrentKey() + "cluster注册计时器");
                 firstState.update(false);
                 long timer = context.timerService().currentProcessingTime();
-                long timeOffset = random.nextInt(3 * 1000) - 1500;
-                context.timerService().registerProcessingTimeTimer(timer + THIRTY_SECONDS + timeOffset);
+                long timeOffset = random.nextInt(6 * 1000) - 3000;
+                context.timerService().registerProcessingTimeTimer(timer + ONE_MINUTE + timeOffset);
             }
         } else {
             // 请求计数加一(只有已经注册过计时器的才可以统计queryNumber)
@@ -213,13 +222,13 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // --- 核心计算部分结束
 
         // --- 缓存添加部分
-        // 如果query可以被添加进缓存，进行缓存添加操作(可被添加进缓存的query是1.6 * average)
-        if (query.cacheable) {
+        // 如果query可以被添加进缓存，并且在现有缓存集中匹配不到,进行缓存添加操作(可被添加进缓存的query是>0.5 * cluster.boundEllipse.constant )
+        if (query.cacheable && !isMatched) {
             // 未收敛的情况下再进行后续操作
             if (immutabilityCountState.value() < convergence) {
                 int winnersSize = winnersSizeState.value();
                 int candidatesSize = candidatesSizeState.value();
-                if (winnersSize < winnersMaxSize) {
+                if (winnersSize < hotClusterSizeState.value()) {
 //                    logger.info(context.getCurrentKey() + "winners add cache");
                     int pathID = IDSupplierState.value();
                     addCache(winnersPathState, winnersVertexState, pathID, pathSequence);
@@ -245,9 +254,14 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
      */
     @Override
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
+        // 如果一个cluster经常被访问，是热点区域的话，我们适当扩大这个cluster下能容纳的cache大小
+        if (queryNumberState.value() > hotCluster && hotClusterSizeState.value() == winnersMaxSize) {
+            hotClusterSizeState.update(winnersMaxSize * 10);
+        }
+
         // 两个都不是空的，就进行缓存的更新(1、胜者组候选者组的交换 ； 2、候选者组清空 ； 3、胜者组所有count被重置为0)
         double hitNumber = 0;
-//        logger.info(ctx.getCurrentKey() + "的query number:" +queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
+        logger.info(ctx.getCurrentKey() + "的query number:" +queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
         // cache起码要拥有一些数据再进行update计算
         if (!winnersPathState.isEmpty() && !candidatesPathState.isEmpty()) {
             Path outPath = new Path(-1);
@@ -324,29 +338,34 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             }
         }
 
-        // 如果cluster被遗弃了，所有状态无需再保存，清除当前key下所有状态，以减少内存使用
+        // 如果cluster被遗弃了，所有状态无需再保存，清除当前key下所有缓存状态，重置当前key下所有判断状态，以减少内存使用
+        // 但是ownerClusterState需要保存，以免cluster被误判遗弃，这样还保留有东山再起的可能
         if (abandonedCountState.value() >= abandon) {
             logger.info(ctx.getCurrentKey() + "已被遗弃");
+            // 清除缓存状态
             winnersPathState.clear();
             winnersVertexState.clear();
             candidatesPathState.clear();
             candidatesVertexState.clear();
-            winnersSizeState.clear();
-            candidatesSizeState.clear();
-            IDSupplierState.clear();
             sourceLandmarkState.clear();
             targetLandmarkState.clear();
-            ownerClusterState.clear();
-            queryNumberState.clear();
-            immutabilityCountState.clear();
-            abandonedCountState.clear();
-            priorHitRatioState.clear();
-            firstState.clear();
+            // 重置判断状态
+            winnersSizeState.update(0);
+            candidatesSizeState.update(0);
+            hotClusterSizeState.update(winnersMaxSize);
+            IDSupplierState.update(0);
+            queryNumberState.update(0);
+            immutabilityCountState.update(0);
+            abandonedCountState.update(0);
+            priorHitRatioState.update(0.0);
+            firstState.update(true);
+            // 不能让ownerClusterState重新赋值，这里设置为1
+            qualifiedState.update(1);
         // 当cluster既未收敛又未遗弃时，再注册下一个时间窗口的计时器
         } else if (immutabilityCountState.value() < convergence) {
             // 加一个时间小偏差，防止大量的计时器在某一个时刻集中运行(在程序刚开始运行时会有大量计时器注册)
-            long timeOffset = random.nextInt(3 * 1000) - 1500;
-            ctx.timerService().registerProcessingTimeTimer(timestamp + THIRTY_SECONDS + timeOffset);
+            long timeOffset = random.nextInt(6 * 1000) - 3000;
+            ctx.timerService().registerProcessingTimeTimer(timestamp + ONE_MINUTE + timeOffset);
         }
     }
 
@@ -369,7 +388,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             // 生成cache匹配结果
             for (Tuple2<Integer, Integer> sourceTuple2 : sourceTable) {
                 for (Tuple2<Integer, Integer> targetTuple2 : targetTable) {
-                    logger.info(targetTuple2.toString());
+//                    logger.info(targetTuple2.toString());
                     if (Objects.equals(targetTuple2.f0, sourceTuple2.f0)) {
                         matchResult.setFields(targetTuple2.f0, targetTuple2.f1, sourceTuple2.f1);
                         return true;
@@ -385,7 +404,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
      */
     private List<String> getSubPath(MapState<Integer, Path> pathMapState,
                                     Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
-        logger.info("cache hit");
+        logger.info("-----cache hit-----");
         // 获得匹配到的缓存路径并把hit number计数器加一
         Path path = pathMapState.get(matchResult.f0);
         // 未收敛的情况下持续统计hit number(收敛以后 hit ratio基本不变再统计也缺少意义)

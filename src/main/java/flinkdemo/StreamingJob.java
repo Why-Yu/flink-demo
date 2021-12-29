@@ -78,7 +78,9 @@ public class StreamingJob {
 								parameterTool.getInt("localCache.candidates.MaxSize"),
 								parameterTool.getInt("localCache.convergence"),
 								parameterTool.getDouble("localCache.negligible"),
-								parameterTool.getInt("localCache.abandon")));
+								parameterTool.getInt("localCache.abandon"),
+								parameterTool.getInt("localCache.qualified"),
+								parameterTool.getInt("localCache.hotCluster")));
 //
 		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 

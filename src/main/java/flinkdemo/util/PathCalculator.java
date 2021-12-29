@@ -182,15 +182,16 @@ public strictfp class PathCalculator {
         return resultList;
     }
 
-    public List<String> getDijkstraShortestPath(Query query) {
+    /*
+    dijkstra只是负责计算landmark。所以不需要生成结果路径
+     */
+    public void getDijkstraShortestPath(Query query) {
         if (isUsed) {
             refresh();
         }
         // ----- 初始化
-        List<String> resultList = new ArrayList<>(100);
         Node currentNode = new Node(query.sourceID, query.source, 0.0);
         String goalID = query.targetID;
-        S2Point goal = query.target;
         // -----
 
         // ----- 算法开始
@@ -216,18 +217,11 @@ public strictfp class PathCalculator {
                 closeMap.put(currentNode.dataIndex, currentNode.gCost);
                 openMap.remove(currentNode.dataIndex);
             } else {
-                return new ArrayList<>();
+                return;
             }
         }
         // -----
-
         isUsed = true;
-        // 生成结果路径
-        while (currentNode != null) {
-            resultList.add(currentNode.dataIndex);
-            currentNode = currentNode.parent;
-        }
-        return resultList;
     }
 
     public HashMap<String, Double> getCloseMap() {

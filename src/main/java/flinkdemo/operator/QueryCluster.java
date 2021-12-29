@@ -115,58 +115,54 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
      */
     @Override
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<Query> out) throws Exception {
-        // 准备融合的cluster list
-        List<Cluster> mergeList = new ArrayList<>();
-        // 记录下需要被融合的元素，其实也就是把对应元素在clusterListState删去
-        List<String> removeClusterList = new ArrayList<>();
-        for (Cluster cluster : clusterListState.get()) {
-            mergeList.add(cluster);
-        }
-        // 默认按照升序排序，我们这里必须采用降序,list中按椭圆的2a由大到小
-        // 降序可以保证，在查询query落在哪一个cluster中时，可以按照cluster从大到小依次遍历
-        Collections.sort(mergeList);
-//        if (ctx.getCurrentKey() == 3) {
-//            for (Cluster cluster : mergeList) {
-//                logger.info("constant:" + String.valueOf(cluster.boundEllipse.constant));
-//            }
-//            logger.info("mergeListSize:" + mergeList.size());
-//        }
+       // 当clusterList确实添加了新cluster再执行计算，不然就不需要浪费时间计算这些，节省资源
+        if (newClusterListState.get().iterator().hasNext()) {
+            // 准备融合的cluster list
+            List<Cluster> mergeList = new ArrayList<>();
+            // 记录下需要被融合的元素，其实也就是把对应元素在clusterListState删去
+            List<String> removeClusterList = new ArrayList<>();
+            for (Cluster cluster : clusterListState.get()) {
+                mergeList.add(cluster);
+            }
+            // 默认按照升序排序，我们这里必须采用降序,list中按椭圆的2a由大到小
+            // 降序可以保证，在查询query落在哪一个cluster中时，可以按照cluster从大到小依次遍历
+            Collections.sort(mergeList);
 
-
-        // 只需要在cluster首次加入的时候，查看一下比它小的cluster是否能融合进来就是完成了精确的融合计算
-        // 在原先的程序中每一次计时器都查看后一半能否融合进前一半的机械思路下(不仅机械，也是不精确的)
-        // 经过实验，发现即使是这样，计算量还是太大(在每秒喂16个query的情况下)，每个角度窗口下有很多cluster而contains的计算又很耗费资源
-        // 而其实很多融合计算都是重复的，因为之前实际上已经计算过融合情况
-        // 所以经过思考，我们增加一个state，用来记录本时间轮次新加入的cluster，因为只有queryInCluster全部返回false,才会加入新cluster
-        // 所以新加入的cluster必定不会被已有cluster包含，这样我们只需要检查比新加入的cluster小的已有cluster即可完成精确融合计算
-        // (题外话:聚簇不是覆盖越广越好，聚簇更加local一些对于解决落在其内部的query更加有效，但与此带来的问题是大query无法用小聚簇来解决)
-        for (String newClusterID : newClusterListState.get()) {  // 检查顺序无所谓先后，新加入的cluster就算有包含关系也可以返回正确的结果
-            for (int i = mergeList.size() - 1 ; i >= 0 ; --i) {
-                if (mergeList.get(i).clusterID.equals(newClusterID)) {
-                    for (int j = mergeList.size() - 1; j > i ; --j) {
-                        // 聚簇融合条件是大Cap完全包含了小Cap
-                        if (mergeList.get(i).contains(mergeList.get(j))) {
-                            // clusterID可以重复添加，这个是无所谓的
-                            removeClusterList.add(mergeList.get(j).clusterID);
+            // 只需要在cluster首次加入的时候，查看一下比它小的cluster是否能融合进来就是完成了精确的融合计算
+            // 在原先的程序中每一次计时器都查看后一半能否融合进前一半的机械思路下(不仅机械，也是不精确的)
+            // 经过实验，发现即使是这样，计算量还是太大(在每秒喂16个query的情况下)，每个角度窗口下有很多cluster而contains的计算又很耗费资源
+            // 而其实很多融合计算都是重复的，因为之前实际上已经计算过融合情况
+            // 所以经过思考，我们增加一个state，用来记录本时间轮次新加入的cluster，因为只有queryInCluster全部返回false,才会加入新cluster
+            // 所以新加入的cluster必定不会被已有cluster包含，这样我们只需要检查比新加入的cluster小的已有cluster即可完成精确融合计算
+            // (题外话:聚簇不是覆盖越广越好，聚簇更加local一些对于解决落在其内部的query更加有效，但与此带来的问题是大query无法用小聚簇来解决)
+            for (String newClusterID : newClusterListState.get()) {  // 检查顺序无所谓先后，新加入的cluster就算有包含关系也可以返回正确的结果
+                for (int i = mergeList.size() - 1 ; i >= 0 ; --i) {
+                    if (mergeList.get(i).clusterID.equals(newClusterID)) {
+                        for (int j = mergeList.size() - 1; j > i ; --j) {
+                            // 聚簇融合条件是大Cap完全包含了小Cap
+                            if (mergeList.get(i).contains(mergeList.get(j))) {
+                                // clusterID可以重复添加，这个是无所谓的
+                                removeClusterList.add(mergeList.get(j).clusterID);
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             }
-        }
-        // clear状态，为记录下一轮次做准备
-        newClusterListState.clear();
+            // clear状态，为记录下一轮次做准备
+            newClusterListState.clear();
 
-        if (removeClusterList.size() > 0) {
-            logger.info(removeClusterList.toString());
-            // 直接删除对应元素并对状态进行更新
-            mergeList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
-            clusterListState.update(mergeList);
-            timeCountState.update(0);
-        } else {
-            // 本次没有融合任何cluster,未融合计数器加一
-            int timeCount = timeCountState.value();
-            timeCountState.update(timeCount + 1);
+            if (removeClusterList.size() > 0) {
+                logger.info(removeClusterList.toString());
+                // 直接删除对应元素并对状态进行更新
+                mergeList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
+                clusterListState.update(mergeList);
+                timeCountState.update(0);
+            } else {
+                // 本次没有融合任何cluster,未融合计数器加一
+                int timeCount = timeCountState.value();
+                timeCountState.update(timeCount + 1);
+            }
         }
 
         //如果还未收敛，则注册下一个计时器
@@ -176,7 +172,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         } else {
             // 判断结果已收敛
             logger.info(ctx.getCurrentKey() + "分区聚簇已收敛");
-            for (Cluster cluster : mergeList) {
+            for (Cluster cluster : clusterListState.get()) {
                 logger.info(cluster.clusterID + "constant:" + String.valueOf(cluster.boundEllipse.constant));
             }
         }
