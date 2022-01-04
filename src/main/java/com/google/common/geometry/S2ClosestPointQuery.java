@@ -79,7 +79,7 @@ public final class S2ClosestPointQuery<T> {
   private int maxPoints;
 
   /** The max distance to search for points. */
-  private S1Angle maxDistance;
+  private S1ChordAngle maxDistance;
 
   /** The region to restrict closest point search to. */
   private S2Region region;
@@ -134,7 +134,7 @@ public final class S2ClosestPointQuery<T> {
   public S2ClosestPointQuery(S2PointIndex<T> index) {
     this.index = index;
     maxPoints = Integer.MAX_VALUE;
-    maxDistance = S1Angle.INFINITY;
+    maxDistance = S1ChordAngle.INFINITY;
     region = null;
     reset();
   }
@@ -162,12 +162,12 @@ public final class S2ClosestPointQuery<T> {
   }
 
   /** Returns the max distance between returned points and the given target. Default is +inf. */
-  public S1Angle getMaxDistance() {
+  public S1ChordAngle getMaxDistance() {
     return maxDistance;
   }
 
   /** Sets a new max distance to search for points. */
-  public void setMaxDistance(S1Angle maxDistance) {
+  public void setMaxDistance(S1ChordAngle maxDistance) {
     this.maxDistance = maxDistance;
   }
 
@@ -407,7 +407,8 @@ public final class S2ClosestPointQuery<T> {
   }
 
   private void findClosestPointsToTarget(Target target) {
-    maxDistanceLimit = S1ChordAngle.fromS1Angle(maxDistance);
+    // 创建一个新的副本吧，因为maxDistanceLimit在算法内部会更改的
+    maxDistanceLimit = S1ChordAngle.fromLength2(maxDistance.getLength2());
     if (useBruteForce) {
       findClosestPointsBruteForce(target);
     } else {

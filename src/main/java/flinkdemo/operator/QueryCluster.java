@@ -23,7 +23,7 @@ import java.util.*;
 public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
     public static final Logger logger = LoggerFactory.getLogger(QueryCluster.class);
     // 注册的计时器时间窗口
-    private static final long TEN_SECONDS = 10 * 1000;
+    private static final long EIGHT_SECONDS = 8 * 1000;
     // 利用随机数制造时间小偏差，防止计时器的拥挤
     private static final Random random = new Random();
     // 多少次计算之后cluster的数量不再发生，则判断收敛，不再注册计时器(因为我们估计，代码运行一段时间后，cluster必将收敛)
@@ -36,7 +36,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
     // 所以我们不再机械的逐一检查cluster列表中后一半能否融合进前一半(注意这个过程实际上绝大部分实在重复计算，因为之前轮次其实算过了)
     // 在这种情况我们的优化是，对这一轮次新加入的cluster，查看比它小的已有cluster是否可以融合进来
     // 因为我们已知新加入的聚簇不可能被包含在已有聚簇中(否则queryInCluster函数就会命中)，所以只会出现新加入的cluster可能包含已有cluster的情况出现
-    private transient ListState<String> newClusterListState;
+    private transient ListState<Cluster> newClusterListState;
     // 统计已经有多少轮次clusterList没有发生任何改变
     private transient ValueState<Integer> timeCountState;
     // ID提供器
@@ -52,7 +52,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
     @Override
     public void open(Configuration parameters) throws Exception {
         ListStateDescriptor<Cluster> listStateDescriptor = new ListStateDescriptor<>("clusterState", Cluster.class);
-        ListStateDescriptor<String> newClusterListStateDescriptor = new ListStateDescriptor<>("newClusterList", String.class);
+        ListStateDescriptor<Cluster> newClusterListStateDescriptor = new ListStateDescriptor<>("newClusterList", Cluster.class);
         ValueStateDescriptor<Integer> timeCountStateDescriptor = new ValueStateDescriptor<>("timeCount", Types.INT, 0);
         ValueStateDescriptor<Integer> IDSupplierStateDescriptor = new ValueStateDescriptor<>("clusterIDSupplier", Types.INT, 1);
         ValueStateDescriptor<Boolean> firstStateDescriptor = new ValueStateDescriptor<>("queryFirst", Types.BOOLEAN, true);
@@ -69,8 +69,8 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             firstState.update(false);
             logger.info(context.getCurrentKey() + "方向窗口第一次注册计时器");
             long timer = context.timerService().currentProcessingTime();
-            long timeOffset = random.nextInt(1000) - 500;
-            context.timerService().registerProcessingTimeTimer(timer + TEN_SECONDS + timeOffset);
+            long timeOffset = random.nextInt(800) - 400;
+            context.timerService().registerProcessingTimeTimer(timer + EIGHT_SECONDS + timeOffset);
         }
 
         // 遍历query是否落在某个cluster中，若有，则附上clusterID,下一个算子依据特定clusterID进行逻辑分区
@@ -103,7 +103,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             query.setCacheable(true);
             IDSupplierState.update(countID + 1);
             // 添加进此轮次新加入cluster列表
-            newClusterListState.add(clusterID);
+            newClusterListState.add(cluster);
             collector.collect(query);
         }
     }
@@ -119,14 +119,25 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         if (newClusterListState.get().iterator().hasNext()) {
             // 准备融合的cluster list
             List<Cluster> mergeList = new ArrayList<>();
+            // 准备接受融合检查的新加入cluster
+            List<Cluster> uncheckedList = new ArrayList<>();
             // 记录下需要被融合的元素，其实也就是把对应元素在clusterListState删去
             List<String> removeClusterList = new ArrayList<>();
             for (Cluster cluster : clusterListState.get()) {
                 mergeList.add(cluster);
             }
-            // 默认按照升序排序，我们这里必须采用降序,list中按椭圆的2a由大到小
-            // 降序可以保证，在查询query落在哪一个cluster中时，可以按照cluster从大到小依次遍历
+
+            for (Cluster cluster : newClusterListState.get()) {
+                uncheckedList.add(cluster);
+            }
+            // !!!错误!!!默认按照升序排序，我们这里必须采用降序,list中按椭圆的2a由大到小
+            // 降序可以保证，在查询query落在哪一个cluster中时，可以按照cluster从大到小依次遍历!!!错误!!!
+            // --逻辑更正，我们认为，一个query应该尽可能更加local的解决，
+            // 越是放在local cluster中，搜索空间就会越小，cache的命中率也会更高，只有没办法时才把query放到大cluster中一般化解决
+            // 所以现更正为升序排序，同时新加入cluster也必须升序，保证按照从小到大的顺序接受检查
+            // 防止出现新加入cluster本身出现包含情况，但却不被检查
             Collections.sort(mergeList);
+            Collections.sort(uncheckedList);
 
             // 只需要在cluster首次加入的时候，查看一下比它小的cluster是否能融合进来就是完成了精确的融合计算
             // 在原先的程序中每一次计时器都查看后一半能否融合进前一半的机械思路下(不仅机械，也是不精确的)
@@ -135,10 +146,10 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             // 所以经过思考，我们增加一个state，用来记录本时间轮次新加入的cluster，因为只有queryInCluster全部返回false,才会加入新cluster
             // 所以新加入的cluster必定不会被已有cluster包含，这样我们只需要检查比新加入的cluster小的已有cluster即可完成精确融合计算
             // (题外话:聚簇不是覆盖越广越好，聚簇更加local一些对于解决落在其内部的query更加有效，但与此带来的问题是大query无法用小聚簇来解决)
-            for (String newClusterID : newClusterListState.get()) {  // 检查顺序无所谓先后，新加入的cluster就算有包含关系也可以返回正确的结果
-                for (int i = mergeList.size() - 1 ; i >= 0 ; --i) {
-                    if (mergeList.get(i).clusterID.equals(newClusterID)) {
-                        for (int j = mergeList.size() - 1; j > i ; --j) {
+            for (Cluster cluster : uncheckedList) {  // 检查顺序必须有小到大
+                for (int i = 0 ; i < mergeList.size() ; ++i) {
+                    if (mergeList.get(i).clusterID.equals(cluster.clusterID)) {
+                        for (int j = 0; j < i ; ++j) {
                             // 聚簇融合条件是大Cap完全包含了小Cap
                             if (mergeList.get(i).contains(mergeList.get(j))) {
                                 // clusterID可以重复添加，这个是无所谓的
@@ -167,8 +178,8 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
 
         //如果还未收敛，则注册下一个计时器
         if (timeCountState.value() < convergence) {
-            long timeOffset = random.nextInt(1000) - 500;
-            ctx.timerService().registerProcessingTimeTimer(timestamp + TEN_SECONDS + timeOffset);
+            long timeOffset = random.nextInt(800) - 400;
+            ctx.timerService().registerProcessingTimeTimer(timestamp + EIGHT_SECONDS + timeOffset);
         } else {
             // 判断结果已收敛
             logger.info(ctx.getCurrentKey() + "分区聚簇已收敛");

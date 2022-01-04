@@ -16,8 +16,6 @@
 
 package com.google.common.geometry;
 
-import static com.google.common.geometry.S2Projections.PROJ;
-
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.HashMultiset;
@@ -25,11 +23,14 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multiset;
 import com.google.common.geometry.S2ClosestPointQuery.Result;
+
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Stack;
-import javax.annotation.Nullable;
+
+import static com.google.common.geometry.S2Projections.PROJ;
 
 /**
  * This is a simple class for assembling polygons out of edges. It requires that no two edges cross.
@@ -840,7 +841,7 @@ public final strictfp class S2PolygonBuilder {
     List<Result<Void>> mergeable = Lists.newArrayList();
     S2PointIndex<Void> index = index();
     S2ClosestPointQuery<Void> query = new S2ClosestPointQuery<>(index);
-    query.setMaxDistance(snapDistance);
+    query.setMaxDistance(S1ChordAngle.fromS1Angle(snapDistance));
     for (S2Iterator<S2PointIndex.Entry<Void>> it = index.iterator(); !it.done(); it.next()) {
       // Skip any vertices that have already been merged with another vertex.
       S2Point vstart = it.entry().point();
@@ -893,7 +894,7 @@ public final strictfp class S2PolygonBuilder {
     // be spliced into it.  If there are, we choose one such vertex, split
     // the edge into two pieces, and iterate on each piece.
     S2ClosestPointQuery<Void> query = new S2ClosestPointQuery<>(index());
-    query.setMaxDistance(spliceDistance);
+    query.setMaxDistance(S1ChordAngle.fromS1Angle(spliceDistance));
     List<Result<Void>> results = new ArrayList<>();
     while (!pendingEdges.isEmpty()) {
       // Must remove last edge before pushing new edges.

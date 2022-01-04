@@ -30,18 +30,19 @@ public class Cluster implements Comparable<Cluster>{
     }
 
     /*
-    其实就是重写了Double.compare()方法,不过要使用降序,所以小于返回1
+    !!!错误!!!其实就是重写了Double.compare()方法,不过要使用降序,所以小于返回1
+    已更正，现使用升序排序，因为query优先放在小cluster中解决
      */
     @Override
     public int compareTo(Cluster o) {
         if (this.boundEllipse.constant < o.boundEllipse.constant)
-            return 1;
-        if (this.boundEllipse.constant > o.boundEllipse.constant)
             return -1;
+        if (this.boundEllipse.constant > o.boundEllipse.constant)
+            return 1;
 
         long thisBits = Double.doubleToLongBits(this.boundEllipse.constant);
         long anotherBits = Double.doubleToLongBits(o.boundEllipse.constant);
-        return (Long.compare(anotherBits, thisBits));
+        return (Long.compare(thisBits, anotherBits));
     }
 
     public String getClusterID() {

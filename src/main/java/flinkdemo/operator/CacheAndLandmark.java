@@ -204,7 +204,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             isMatched = cacheMatch(candidatesVertexState, query, matchResult);
             //如果候选者组还是没有匹配到，说明缓存未命中，使用ALLT算法开始计算最短路径
             if (!isMatched) {
-                // 只有注册了计时器，才可以使用ALLT算法，不然生成的landmark以及cache永远无法消除，但是很可能又是没用的
+                // 只有注册了计时器，才可以使用ALLT算法，不然直接生成landmark以及cache会永远无法消除，但是很可能又是没用的
                 if (firstState.value()) {
                     PathCalculator pathCalculator = new PathCalculator();
                     pathSequence = pathCalculator.getAstarShortestPath(query);
@@ -353,7 +353,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             winnersSizeState.update(0);
             candidatesSizeState.update(0);
             hotClusterSizeState.update(winnersMaxSize);
-            IDSupplierState.update(0);
+            IDSupplierState.update(1);
             queryNumberState.update(0);
             immutabilityCountState.update(0);
             abandonedCountState.update(0);

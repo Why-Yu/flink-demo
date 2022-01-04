@@ -41,8 +41,8 @@ public class DataLoad {
 
         // 初始化起始粒度以及起始平均值
         ParametersPasser.granularity = TopologyGraph.getGranularity(myEllipse);
-        // 采用外接矩形长度的35%作为初始值，因为是距离的平方，所以0.35 * 0.35 ~ 0.1
-        ParametersPasser.initialAverage = s2PointS.getDistance2(s2PointT) * 0.1;
+        // 采用外接矩形长度的33%作为初始值
+        ParametersPasser.initialAverage = s2PointS.getDistance(s2PointT) * 0.33;
 
         grLines.forEach(ele -> {
             String[] arr = ele.split("\\s+");

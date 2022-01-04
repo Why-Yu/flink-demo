@@ -89,7 +89,7 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
         // 虽然我们的TopologyGraph中确实存有距离，但是邻接链表的查找需要遍历，所以我们在这里直接计算好了
         // (在几十公里的尺度下，其实和球面距离相差不是很多的)
         // 另外在后续的S1ChordAngle也可以直接使用
-        double distance = TopologyGraph.getDistance2(source, target);
+        double distance = source.getDistance(target);
         query.setSource(source);
         query.setTarget(target);
         query.setLength(distance);
@@ -101,7 +101,7 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
 
         // Length window router(利用长度筛选出短距离请求单独直接处理，对长度距离设置为可缓存，大部分普通距离则正常后续处理)
         double average = averageState.value();
-        if (distance < 0.3 * average) {
+        if (distance < 0.18 * average) {
             context.output(miniQuery, query);
         } else {
             // 最开始设置的值是1.6 * average但是这样貌似要填充完一个cache要花费好长时间
@@ -139,13 +139,18 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
             // 不过在100公里的尺度下，两个Cap的面积大概只有(4.75E-4)%的误差，我觉得是可以忽略的
             // (并且在误差如此小的情况下，通过latestAverage / 4替代，而不是使用精确的半径，我们可以节省大量计算)
             // 由于cap显著比椭圆面积大，所以我们对半径再除2变成latestAverage / 16
-            S2Cap s2Cap = S2Cap.fromAxisChord(new S2Point(1.0, 0.0, 0.0),
-                    S1ChordAngle.fromLength2(latestAverage / 16));
-            int granularity = TopologyGraph.getGranularity(s2Cap);
-            ParametersPasser.setGranularity(granularity);
-//            if (context.getCurrentKey() == 1) {
-//                logger.info("average更新:" + average + ",granularity更新" + granularity);
-//            }
+            if (context.getCurrentKey() == 1) {
+                double length2 = Math.pow(latestAverage, 2);
+                S2Cap s2Cap = S2Cap.fromAxisChord(new S2Point(1.0, 0.0, 0.0),
+                        S1ChordAngle.fromLength2(length2 / 16));
+                int granularity = TopologyGraph.getGranularity(s2Cap);
+                // QueryCluster中，query匹配cluster应该采取的粒度
+                ParametersPasser.setGranularity(granularity);
+                // CacheAndLandmark中，partial hit搜索最近的缓存path中的点的范围
+                // 范围控制在query长度的2%以内
+                ParametersPasser.setMaxDistance(length2 * 4E-4);
+                logger.info("average更新:" + average + ",granularity更新" + granularity);
+            }
         }
     }
 

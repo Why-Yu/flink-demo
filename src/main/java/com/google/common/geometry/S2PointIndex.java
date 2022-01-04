@@ -19,8 +19,9 @@ import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
 import com.google.common.primitives.UnsignedLongs;
+
+import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 
 /**
  * S2PointIndex maintains an index of points sorted by leaf S2CellId. Each point has some associated
@@ -72,8 +73,8 @@ import java.util.List;
 // coverings of a collection of S2Points.
 @GwtCompatible
 public final class S2PointIndex<Data> {
-  private final List<Entry<Data>> entries = Lists.newArrayList();
-  private boolean sorted = true;
+  public final ArrayList<Entry<Data>> entries = Lists.newArrayList();
+  public boolean sorted = true;
 
   /** Returns the number of points in the index. */
   public int numPoints() {
@@ -139,9 +140,9 @@ public final class S2PointIndex<Data> {
    * equals.
    */
   public static class Entry<Data> implements S2Iterator.Entry, Comparable<Entry<Data>> {
-    private final long id;
-    private final S2Point point;
-    private final Data data;
+    public final long id;
+    public final S2Point point;
+    public final Data data;
 
     private Entry(S2CellId cellId, S2Point point, Data data) {
       this.id = cellId.id();

@@ -85,7 +85,7 @@ public class StreamingJob {
 		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 
 //		landmarkResultDataStream.print();
-//		miniResultDataStream.print();
+//		miniDataStream.print();
 
 		// execute program
 		env.execute("test");
