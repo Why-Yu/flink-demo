@@ -1,5 +1,10 @@
 package flinkdemo.entity;
 
+import com.google.common.geometry.S2Point;
+import com.google.common.geometry.S2Polyline;
+import flinkdemo.util.TopologyGraph;
+
+import java.util.ArrayList;
 import java.util.List;
 
 /*
@@ -20,11 +25,11 @@ public class Path {
         this.pathID = pathID;
     }
 
-    public Path(int pathID, List<String> sequence, double length2) {
+    public Path(int pathID, List<String> sequence, int count) {
         this.pathID = pathID;
         this.sequence = sequence;
-        this.count = 0;
-        this.length2 = length2;
+        this.count = count;
+        this.length2 = 0;
     }
 
     public int getPathID() {
@@ -61,6 +66,22 @@ public class Path {
 
     public void count() {
         this.count += 1;
+    }
+
+    public S2Point getFirstVertex() {
+        return TopologyGraph.getVertex(sequence.get(0));
+    }
+
+    public S2Point getLastVertex() {
+        return TopologyGraph.getVertex(sequence.get(sequence.size() - 1));
+    }
+
+    public S2Polyline toPolyline() {
+        List<S2Point> pointList = new ArrayList<>();
+        for (String dataIndex : sequence) {
+            pointList.add(TopologyGraph.getVertex(dataIndex));
+        }
+        return new S2Polyline(pointList);
     }
 
     @Override

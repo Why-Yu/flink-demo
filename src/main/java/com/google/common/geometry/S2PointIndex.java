@@ -19,9 +19,11 @@ import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
 import com.google.common.primitives.UnsignedLongs;
+import flinkdemo.util.TopologyGraph;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * S2PointIndex maintains an index of points sorted by leaf S2CellId. Each point has some associated
@@ -104,6 +106,18 @@ public final class S2PointIndex<Data> {
     entries.add(entry);
   }
 
+  public void addAll(List<String> pathSequence, List<Data> dataList) {
+    ArrayList<Entry<Data>> addList = Lists.newArrayList();
+    int index = 0;
+    for (String dataIndex : pathSequence) {
+      S2Point point = TopologyGraph.getVertex(dataIndex);
+      addList.add(createEntry(point, dataList.get(index)));
+      ++index;
+    }
+    sorted = false;
+    entries.addAll(addList);
+  }
+
   /** As {@link #remove(Entry)}, but more convenient. */
   public boolean remove(S2Point point, Data data) {
     return remove(createEntry(point, data));
@@ -116,6 +130,16 @@ public final class S2PointIndex<Data> {
    */
   public boolean remove(Entry<Data> entry) {
     return entries.remove(entry);
+  }
+
+  public void removeAll(List<String> pathSequence, List<Data> dataList) {
+    ArrayList<Entry<Data>> removeList = Lists.newArrayList();
+    int index = 0;
+    for (String dataIndex : pathSequence) {
+      S2Point point = TopologyGraph.getVertex(dataIndex);
+      removeList.add(createEntry(point, dataList.get(index)));
+    }
+    entries.removeAll(removeList);
   }
 
   /**
@@ -144,10 +168,16 @@ public final class S2PointIndex<Data> {
     public final S2Point point;
     public final Data data;
 
-    private Entry(S2CellId cellId, S2Point point, Data data) {
+    public Entry(S2CellId cellId, S2Point point, Data data) {
       this.id = cellId.id();
       this.point = point;
       this.data = data;
+    }
+
+    public Entry() {
+      this.id = 0;
+      this.point = new S2Point();
+      this.data = null;
     }
 
     @Override

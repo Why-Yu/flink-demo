@@ -149,7 +149,7 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
                 // CacheAndLandmark中，partial hit搜索最近的缓存path中的点的范围
                 // 范围控制在query长度的2%以内
                 ParametersPasser.setMaxDistance(length2 * 4E-4);
-                logger.info("average更新:" + average + ",granularity更新" + granularity);
+                logger.info("average更新:" + latestAverage + ",granularity更新" + granularity);
             }
         }
     }

@@ -27,11 +27,21 @@ public strictfp class PathCalculator {
     public BinaryMinHeap<Node> minHeap;
     // pathCalculator当然可以重复使用，不然怎么叫计算器，所以需要这个变量来判断是否需要刷新openMap;closeMap;minHeap
     private boolean isUsed = false;
+    // pathCalculator中Map以及Heap的初始大小
+    private final int capacity;
 
     public PathCalculator() {
-        this.openMap = new HashMap<>(512);
-        this.closeMap = new HashMap<>(512);
-        this.minHeap = new BinaryMinHeap<>(Node.class, 256);
+        this.capacity = 512;
+        this.openMap = new HashMap<>(capacity);
+        this.closeMap = new HashMap<>(capacity);
+        this.minHeap = new BinaryMinHeap<>(Node.class, capacity / 2);
+    }
+
+    public PathCalculator(int capacity) {
+        this.capacity = capacity;
+        this.openMap = new HashMap<>(capacity);
+        this.closeMap = new HashMap<>(capacity);
+        this.minHeap = new BinaryMinHeap<>(Node.class, capacity / 2);
     }
 
     public List<String> getLandmarkShortestPath(Query query, MapState<String, Double> landmarkState, boolean direction) throws Exception {
@@ -235,9 +245,9 @@ public strictfp class PathCalculator {
     至于内存回收，就让JVM去做吧
      */
     private void refresh() {
-        this.openMap = new HashMap<>(512);
-        this.closeMap = new HashMap<>(512);
-        this.minHeap = new BinaryMinHeap<>(Node.class, 256);
+        this.openMap = new HashMap<>(capacity);
+        this.closeMap = new HashMap<>(capacity);
+        this.minHeap = new BinaryMinHeap<>(Node.class, capacity / 2);
         this.isUsed = false;
     }
 

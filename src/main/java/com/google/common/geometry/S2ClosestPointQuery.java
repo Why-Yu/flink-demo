@@ -378,8 +378,8 @@ public final class S2ClosestPointQuery<T> {
       // Visit each potential covering cell except the last (handled below).
       S2CellId coverLast = indexLast.parent(level);
       for (S2CellId cover = indexNext.parent(level);
-          !cover.equals(coverLast) && !nextIt.done();
-          cover = cover.next()) {
+           !cover.equals(coverLast) && !nextIt.done();
+           cover = cover.next()) {
         // Skip any covering cells that don't contain any index cells.
         S2CellId coverMax = cover.rangeMax();
         if (nextIt.compareTo(coverMax) <= 0) {
@@ -407,7 +407,6 @@ public final class S2ClosestPointQuery<T> {
   }
 
   private void findClosestPointsToTarget(Target target) {
-    // 创建一个新的副本吧，因为maxDistanceLimit在算法内部会更改的
     maxDistanceLimit = S1ChordAngle.fromLength2(maxDistance.getLength2());
     if (useBruteForce) {
       findClosestPointsBruteForce(target);
@@ -502,9 +501,9 @@ public final class S2ClosestPointQuery<T> {
     }
     if (!maxDistanceLimit.isInfinity()) {
       S2Cap searchCap =
-          S2Cap.fromAxisAngle(
-              target.center(),
-              S1Angle.radians(target.radius() + maxDistanceLimit.toAngle().radians()));
+              S2Cap.fromAxisAngle(
+                      target.center(),
+                      S1Angle.radians(target.radius() + maxDistanceLimit.toAngle().radians()));
       coverer.getFastCovering(searchCap, maxDistanceCovering);
       S2CellUnion.getIntersection(initialCells, maxDistanceCovering, intersectionWithMaxDistance);
       initialCells = intersectionWithMaxDistance;

@@ -1,14 +1,10 @@
 package flinkdemo.operator;
 
-import com.google.common.geometry.S2LatLng;
+import com.google.common.geometry.*;
 import flinkdemo.entity.Path;
 import flinkdemo.entity.Query;
-import flinkdemo.util.PathCalculator;
-import flinkdemo.util.TopologyGraph;
-import org.apache.flink.api.common.state.MapState;
-import org.apache.flink.api.common.state.MapStateDescriptor;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
+import flinkdemo.util.*;
+import org.apache.flink.api.common.state.*;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -27,7 +23,7 @@ import java.util.*;
 1、cache的构建与匹配(inverted map)
 2、cache更新(基于LFU-aging)与废弃
 3、基于localLandmark的ALT计算
-奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有17个状态，总觉得不太好
+奇怪的地方，同一个算子完成的功能太多了，很希望能拆分，但感觉又没有办法拆开，导致这个算子拥有20个状态，总觉得不太好
  */
 public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String> {
     public static final Logger logger = LoggerFactory.getLogger(CacheAndLandmark.class);
@@ -54,6 +50,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private final int abandon;
     private final int qualified;
     private final int hotCluster;
+    private final double errorBound;
 
     // --- localCache
     // localCache中的胜者组，其与历史query有较强的联系
@@ -72,6 +69,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private transient ValueState<Integer> hotClusterSizeState;
     // ID提供器
     private transient ValueState<Integer> IDSupplierState;
+    // 当前时间窗口最新的closestPointQuery,pointIndex也维护在其内部，提供partial hit功能
+    private transient ValueState<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> winnersQueryState;
+    private transient ValueState<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> candidatesQueryState;
 
     // --- localLandmark
     // localLandmark表，两个local landmark 提供A*算法中，更tighter的lower bound，让最短路径算法的搜索空间尽可能小
@@ -81,8 +81,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private transient ValueState<Query> ownerClusterState;
 
     // --- hit ratio
-    // 统计当前聚簇下的query总数，提供后续hit ratio计算
+    // 统计当前聚簇下的，本轮次时间窗口内的query总数，提供后续hit ratio计算
     private transient ValueState<Integer> queryNumberState;
+    // 统计当前聚簇下的，本轮次时间窗口内的hit总数
+    private transient ValueState<Double> hitNumberState;
     // hit ratio已经有多少轮次几乎没有发生改变(判断收敛的依据)
     private transient ValueState<Integer> immutabilityCountState;
     // 已经有多少轮次query number 一直为0(判断此cluster是否被遗弃的依据)
@@ -97,7 +99,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     private transient ValueState<Integer> qualifiedState;
 
     public CacheAndLandmark(int winnersMaxSize, int candidatesMaxSize, int convergence, double negligible, int abandon,
-                            int qualified, int hotCluster) {
+                            int qualified, int hotCluster, double errorBound) {
         this.winnersMaxSize = winnersMaxSize;
         this.candidatesMaxSize = candidatesMaxSize;
         this.convergence = convergence;
@@ -105,6 +107,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         this.abandon = abandon;
         this.qualified = qualified;
         this.hotCluster = hotCluster;
+        this.errorBound = errorBound;
     }
 
     @Override
@@ -113,13 +116,23 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         MapStateDescriptor<Integer, Path> winnersPathStateDescriptor = new MapStateDescriptor<>("winnersPath",
                 Types.INT, TypeInformation.of(Path.class));
         MapStateDescriptor<String, ArrayList<Tuple2<Integer, Integer>>> winnersVertexStateDescriptor = new MapStateDescriptor<>("winnersVertex",
-                TypeInformation.of(String.class), TypeInformation.of(new TypeHint<ArrayList<Tuple2<Integer, Integer>>>() {}));
+                TypeInformation.of(String.class), TypeInformation.of(new TypeHint<ArrayList<Tuple2<Integer, Integer>>>() {
+        }));
 
         // candidates
         MapStateDescriptor<Integer, Path> candidatesPathStateDescriptor = new MapStateDescriptor<>("candidatesPath",
                 Types.INT, TypeInformation.of(Path.class));
         MapStateDescriptor<String, ArrayList<Tuple2<Integer, Integer>>> candidatesVertexStateDescriptor = new MapStateDescriptor<>("candidatesVertex",
-                TypeInformation.of(String.class), TypeInformation.of(new TypeHint<ArrayList<Tuple2<Integer, Integer>>>() {}));
+                TypeInformation.of(String.class), TypeInformation.of(new TypeHint<ArrayList<Tuple2<Integer, Integer>>>() {
+        }));
+
+        // partial hit
+        ValueStateDescriptor<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> winnersQueryStateDescriptor = new ValueStateDescriptor<>("winnersQuery",
+                TypeInformation.of(new TypeHint<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>>() {
+                }), new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
+        ValueStateDescriptor<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> candidatesQueryStateDescriptor = new ValueStateDescriptor<>("candidatesQuery",
+                TypeInformation.of(new TypeHint<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>>() {
+                }), new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
 
         // cache size
         ValueStateDescriptor<Integer> winnersSizeStateDescriptor = new ValueStateDescriptor<>("winnersSize", Types.INT, 0);
@@ -137,6 +150,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 
         // hit ratio & abandoned
         ValueStateDescriptor<Integer> queryNumberStateDescriptor = new ValueStateDescriptor<>("queryNumber", Types.INT, 0);
+        ValueStateDescriptor<Double> hitNumberStateDescriptor = new ValueStateDescriptor<>("hitNumber", Types.DOUBLE, 0.0);
         ValueStateDescriptor<Integer> immutabilityCountStateDescriptor = new ValueStateDescriptor<>("immutabilityCount", Types.INT, 0);
         ValueStateDescriptor<Integer> abandonedCountStateDescriptor = new ValueStateDescriptor<>("abandonedCount", Types.INT, 0);
         ValueStateDescriptor<Double> priorHitRatioStateDescriptor = new ValueStateDescriptor<>("priorHitRatio", Types.DOUBLE, 0.0);
@@ -156,7 +170,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         sourceLandmarkState = getRuntimeContext().getMapState(sourceLandmarkStateDescriptor);
         targetLandmarkState = getRuntimeContext().getMapState(targetLandmarkStateDescriptor);
         ownerClusterState = getRuntimeContext().getState(ownerClusterStateDescriptor);
+        winnersQueryState = getRuntimeContext().getState(winnersQueryStateDescriptor);
+        candidatesQueryState = getRuntimeContext().getState(candidatesQueryStateDescriptor);
         queryNumberState = getRuntimeContext().getState(queryNumberStateDescriptor);
+        hitNumberState = getRuntimeContext().getState(hitNumberStateDescriptor);
         immutabilityCountState = getRuntimeContext().getState(immutabilityCountStateDescriptor);
         abandonedCountState = getRuntimeContext().getState(abandonedCountStateDescriptor);
         priorHitRatioState = getRuntimeContext().getState(priorHitRatioStateDescriptor);
@@ -172,11 +189,13 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             if (qualifiedState.value() == 0) {
                 // 存储所属cluster的相关信息
                 ownerClusterState.update(query);
+                winnersQueryState.value().setMaxPoints(5);
+                candidatesQueryState.value().setMaxPoints(5);
                 qualifiedState.update(qualifiedState.value() + 1);
-            // 小于10次query说明现在的cluster还没合格呢，很可能马上会被淘汰，不着急注册计时器的(目的是防止注册大量无用计时器)
+                // 小于10次query说明现在的cluster还没合格呢，很可能马上会被淘汰，不着急注册计时器的(目的是防止注册大量无用计时器)
             } else if (qualifiedState.value() < qualified) {
                 qualifiedState.update(qualifiedState.value() + 1);
-            // cluster合格了，说明可能是一个需要使用的cluster而不是马上被淘汰的那种
+                // cluster合格了，说明可能是一个需要使用的cluster而不是马上被淘汰的那种
             } else {
                 logger.info(context.getCurrentKey() + "cluster注册计时器");
                 firstState.update(false);
@@ -197,25 +216,25 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 最终结果储存处
         List<String> pathSequence;
 
-        // 进行胜者组匹配
-        boolean isMatched = cacheMatch(winnersVertexState, query, matchResult);
-        // 如果在胜者组没有匹配，那么在候选者组继续查找
-        if (!isMatched) {
-            isMatched = cacheMatch(candidatesVertexState, query, matchResult);
-            //如果候选者组还是没有匹配到，说明缓存未命中，使用ALLT算法开始计算最短路径
-            if (!isMatched) {
+        // ALLT算法的路径结果才可以加入缓存
+        boolean addible = false;
+        // 进行完美或完全匹配
+        pathSequence = checkAllMatch(query ,matchResult);
+        // 如果没有匹配到则此对象会是null，所以再进行部分匹配
+        if (pathSequence == null) {
+            // 进行部分匹配
+            pathSequence = checkPartialMatch(query, matchResult);
+            // 如果没有匹配到则此对象依旧是null，所以再进行ALLT算法或是A*
+            if (pathSequence == null) {
                 // 只有注册了计时器，才可以使用ALLT算法，不然直接生成landmark以及cache会永远无法消除，但是很可能又是没用的
                 if (firstState.value()) {
                     PathCalculator pathCalculator = new PathCalculator();
                     pathSequence = pathCalculator.getAstarShortestPath(query);
                 } else {
                     pathSequence = ALLT(query, sourceLandmarkState, targetLandmarkState);
+                    addible = true;
                 }
-            } else { //候选者组匹配到了，获取path sequence(候选者组的hit不算在hit ratio中)
-                pathSequence = getSubPath(candidatesPathState, matchResult);
             }
-        } else { //胜者组匹配到了，获取path sequence
-            pathSequence = getSubPath(winnersPathState, matchResult);
         }
         // 可以先把结果输出了，不需要等待缓存添加完成
         collector.collect(pathSequence.toString());
@@ -223,7 +242,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 
         // --- 缓存添加部分
         // 如果query可以被添加进缓存，并且在现有缓存集中匹配不到,进行缓存添加操作(可被添加进缓存的query是>0.5 * cluster.boundEllipse.constant )
-        if (query.cacheable && !isMatched) {
+        if (query.cacheable && addible) {
             // 未收敛的情况下再进行后续操作
             if (immutabilityCountState.value() < convergence) {
                 int winnersSize = winnersSizeState.value();
@@ -231,14 +250,21 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 if (winnersSize < hotClusterSizeState.value()) {
 //                    logger.info(context.getCurrentKey() + "winners add cache");
                     int pathID = IDSupplierState.value();
-                    addCache(winnersPathState, winnersVertexState, pathID, pathSequence);
-                    IDSupplierState.update(pathID + 1);
-                    winnersSizeState.update(winnersSize + 1);
+                    Path path = new Path(pathID, pathSequence, 0);
+                    // 当前想要加入缓存的路径与现有缓存路径集合没有相似性，则允许加入
+                    if (checkSimilarity(winnersPathState, path)) {
+                        addCache(winnersPathState, winnersVertexState, winnersQueryState, path);
+                        IDSupplierState.update(pathID + 1);
+                        winnersSizeState.update(winnersSize + 1);
+                    }
                 } else if (candidatesSize < candidatesMaxSize) {
                     int pathID = IDSupplierState.value();
-                    addCache(candidatesPathState, candidatesVertexState, pathID, pathSequence);
-                    IDSupplierState.update(pathID + 1);
-                    candidatesSizeState.update(candidatesSize + 1);
+                    Path path = new Path(pathID, pathSequence, 0);
+                    if (checkSimilarity(candidatesPathState, path)) {
+                        addCache(candidatesPathState, candidatesVertexState, candidatesQueryState, path);
+                        IDSupplierState.update(pathID + 1);
+                        candidatesSizeState.update(candidatesSize + 1);
+                    }
                 }
             }
         }
@@ -256,29 +282,28 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
         // 如果一个cluster经常被访问，是热点区域的话，我们适当扩大这个cluster下能容纳的cache大小
         if (queryNumberState.value() > hotCluster && hotClusterSizeState.value() == winnersMaxSize) {
-            hotClusterSizeState.update(winnersMaxSize * 10);
+            hotClusterSizeState.update(winnersMaxSize * 4);
         }
 
         // 两个都不是空的，就进行缓存的更新(1、胜者组候选者组的交换 ； 2、候选者组清空 ； 3、胜者组所有count被重置为0)
-        double hitNumber = 0;
-        logger.info(ctx.getCurrentKey() + "的query number:" +queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
+        logger.info(ctx.getCurrentKey() + "的query number:" + queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
         // cache起码要拥有一些数据再进行update计算
         if (!winnersPathState.isEmpty() && !candidatesPathState.isEmpty()) {
             Path outPath = new Path(-1);
             int outMinCount = Integer.MAX_VALUE;
             double outMinLength2 = Double.POSITIVE_INFINITY;
 
-            Path inPath= new Path(-1);
+            Path inPath = new Path(-1);
             int inMaxCount = Integer.MIN_VALUE;
             double inMaxLength2 = Double.NEGATIVE_INFINITY;
             // 计算胜者组中命中频率最低的出列为候选者(若命中频率一直比如都是0，选择长度最小的cache出列)
             for (Map.Entry<Integer, Path> entry : winnersPathState.entries()) {
                 Path tempPath = entry.getValue();
 //                logger.info(tempPath.toString());
-                hitNumber += tempPath.count;
+                // 每过一个时间窗口，计数变成一半
+                tempPath.count = tempPath.count / 2;
                 if (tempPath.count < outMinCount) {
                     outMinCount = tempPath.count;
-                    tempPath.count = 0;
                     outPath = tempPath;
                 } else if (tempPath.count == outMinCount) {
                     if (tempPath.length2 < outMinLength2) {
@@ -305,15 +330,21 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             // 移除胜者组中关于此path的缓存，加入候选者组中升级过来的path，清空候选者组的所有缓存
             int pathID = outPath.pathID;
             winnersPathState.remove(pathID);
+            int sequencePos = 0;
+            List<Tuple2<Integer, Integer>> dataList = new ArrayList<>(100);
             // 这样写虽然会导致一些计算上的浪费，但是代码最为简洁
             for (String dataIndex : outPath.sequence) {
                 winnersVertexState.get(dataIndex).removeIf(tuple2 -> tuple2.f0 == pathID);
+                dataList.add(Tuple2.of(pathID, sequencePos));
             }
-            // inPath.count不需要重置，因为addCache中创建了新path
-            addCache(winnersPathState, winnersVertexState, inPath.pathID, inPath.sequence);
+            winnersQueryState.value().index().removeAll(outPath.sequence, dataList);
 
+
+            inPath.setCount(inPath.count / 2);
+            addCache(winnersPathState, winnersVertexState, winnersQueryState, inPath);
             candidatesPathState.clear();
             candidatesVertexState.clear();
+            candidatesQueryState.update(new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
             candidatesSizeState.update(0);
         }
 
@@ -323,9 +354,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         if (queryNumber == 0) {
             abandonedCountState.update(abandonedCountState.value() + 1);
         } else {
-            double hitRatio = hitNumber / queryNumber;
-            // 将本时间窗口的query number重置为零
+            double hitRatio = hitNumberState.value() / queryNumber;
+            // 将本时间窗口的query number、hit number重置为零
             queryNumberState.update(0);
+            hitNumberState.update(0.0);
 //        logger.info(ctx.getCurrentKey() + "当前hit ratio" + hitRatio);
             // 判断是否收敛(加一个hit ratio > 0的判断的目的在于，如果cache一直没有命中，hit ratio自然没有变化，但这是不算收敛的)
             if (hitRatio > 0) {
@@ -349,19 +381,22 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             candidatesVertexState.clear();
             sourceLandmarkState.clear();
             targetLandmarkState.clear();
+            winnersQueryState.update(new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
+            candidatesQueryState.update(new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
             // 重置判断状态
             winnersSizeState.update(0);
             candidatesSizeState.update(0);
             hotClusterSizeState.update(winnersMaxSize);
             IDSupplierState.update(1);
             queryNumberState.update(0);
+            hitNumberState.update(0.0);
             immutabilityCountState.update(0);
             abandonedCountState.update(0);
             priorHitRatioState.update(0.0);
             firstState.update(true);
             // 不能让ownerClusterState重新赋值，这里设置为1
             qualifiedState.update(1);
-        // 当cluster既未收敛又未遗弃时，再注册下一个时间窗口的计时器
+            // 当cluster既未收敛又未遗弃时，再注册下一个时间窗口的计时器
         } else if (immutabilityCountState.value() < convergence) {
             // 加一个时间小偏差，防止大量的计时器在某一个时刻集中运行(在程序刚开始运行时会有大量计时器注册)
             long timeOffset = random.nextInt(6 * 1000) - 3000;
@@ -374,14 +409,45 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 
     }
 
+    private List<String> checkAllMatch(Query query, Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
+        // 进行胜者组完美或完全匹配
+        boolean isAllMatched = cacheAllMatch(winnersVertexState, query, matchResult);
+        // 如果在胜者组没有完美或完全匹配，那么在候选者组继续查找
+        if (!isAllMatched) {
+            if (cacheAllMatch(candidatesVertexState, query, matchResult)) {
+                //候选者组匹配到了，获取path sequence(候选者组的hit不算在hit ratio中)
+                return getSubPath(candidatesPathState, matchResult);
+            }
+        } else {  //胜者组匹配到了，获取path sequence
+            return getSubPath(winnersPathState, matchResult);
+        }
+        // 如果没有完美匹配或完全匹配则返回空对象
+        return null;
+    }
+
+    private List<String> checkPartialMatch(Query query, Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
+        // 进行胜者组部分匹配
+        boolean isPartialMatched = cachePartialMatch(winnersQueryState, query, matchResult);
+        // 如果在胜者组没有部分匹配，那么在候选者组继续查找
+        if (!isPartialMatched) {
+            if (cachePartialMatch(candidatesQueryState, query, matchResult)) {
+                return getPartialHitPath(candidatesPathState, query, matchResult);
+            }
+        } else {
+            return getPartialHitPath(winnersPathState, query, matchResult);
+        }
+        // 如果没有部分匹配则返回空对象
+        return null;
+    }
+
     /*
     从inverted map(即winnersVertexState或candidatesVertexState)查找是否有匹配的cache
     query为当前需要匹配的请求
     matchResult存储匹配结果
      */
-    private boolean cacheMatch(MapState<String, ArrayList<Tuple2<Integer, Integer>>> invertedMapState, Query query,
-                               Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
-        // 如果有一个节点不在倒排索引中，说明直接说明缓存中没有路径包含这条子路径，可以省去后续cache查找计算
+    private boolean cacheAllMatch(MapState<String, ArrayList<Tuple2<Integer, Integer>>> invertedMapState, Query query,
+                                  Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
+        // 如果有一个节点不在倒排索引中，直接说明缓存没有perfect hit以及 complete hit，直接采取partial hit计算
         if (invertedMapState.contains(query.sourceID) && invertedMapState.contains(query.targetID)) {
             ArrayList<Tuple2<Integer, Integer>> sourceTable = invertedMapState.get(query.sourceID);
             ArrayList<Tuple2<Integer, Integer>> targetTable = invertedMapState.get(query.targetID);
@@ -400,6 +466,47 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     }
 
     /*
+    查找是否有部分缓存的匹配
+     */
+    private boolean cachePartialMatch(ValueState<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> pointQueryState,
+                                      Query query, Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
+        OurS2ClosestPointQuery<Tuple2<Integer, Integer>> pointQuery = pointQueryState.value();
+        pointQuery.setMaxDistance(S1ChordAngle.fromLength2(Math.pow(query.length, 2) * errorBound * errorBound));
+        List<OurS2ClosestPointQuery.Result<Tuple2<Integer, Integer>>> sourceResults = pointQuery.findClosestPoints(query.source);
+        List<OurS2ClosestPointQuery.Result<Tuple2<Integer, Integer>>> targetResults = pointQuery.findClosestPoints(query.target);
+        for (OurS2ClosestPointQuery.Result<Tuple2<Integer, Integer>> resultS : sourceResults) {
+            for (OurS2ClosestPointQuery.Result<Tuple2<Integer, Integer>> resultT : targetResults) {
+                if (Objects.equals(resultS.entry().data.f0, resultT.entry().data.f0)) {
+                    matchResult.setFields(resultS.entry().data.f0, resultS.entry().data.f1, resultT.entry().data.f1);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /*
+   获得部分缓存命中下的路径
+    */
+    private List<String> getPartialHitPath(MapState<Integer, Path> pathMapState,
+                                           Query query, Tuple3<Integer, Integer, Integer> matchResult) throws Exception {
+        List<String> pathSequence;
+        PathCalculator pathCalculator = new PathCalculator(256);
+        // 获得部分命中的head 以及 tail，并生成相应的query
+        Path path = pathMapState.get(matchResult.f0);
+        String head = path.sequence.get(matchResult.f1);
+        String tail = path.sequence.get(matchResult.f2);
+        // 由于返回的路径是倒序的，为了路径顺序正确，我们需要将起终点对调生成query
+        Query queryS = new Query(head, query.sourceID, TopologyGraph.getVertex(head), query.source);
+        Query queryT = new Query(query.targetID, tail, query.target, TopologyGraph.getVertex(tail));
+        // 将三段结果路径进行拼凑
+        pathSequence = pathCalculator.getAstarShortestPath(queryS);
+        pathSequence.addAll(getSubPath(pathMapState, matchResult));
+        pathSequence.addAll(pathCalculator.getAstarShortestPath(queryT));
+        return pathSequence;
+    }
+
+    /*
     利用匹配结果，获取对应路径下的子序列
      */
     private List<String> getSubPath(MapState<Integer, Path> pathMapState,
@@ -411,6 +518,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 另外由于onTimer不再执行，如果这里再持续增加，会导致count超限(所以收敛后不再执行)
         if (immutabilityCountState.value() < convergence) {
             path.count();
+            hitNumberState.update(hitNumberState.value() + 1);
         }
         List<String> subSequence;
         // fromIndex必须满足小于toIndex，所以需要加一步判断
@@ -456,7 +564,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         if (isSource) {
             return getLandmarkShortestPath(query, sourceLandmarkState, pathCalculator);
         } else {
-           return getLandmarkShortestPath(query, targetLandmarkState, pathCalculator);
+            return getLandmarkShortestPath(query, targetLandmarkState, pathCalculator);
         }
     }
 
@@ -471,9 +579,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 如果landmark中都不包含query的起终点，那么我们无法利用三角不等式生成lower bound，则回退到A*
         if (!landmarkState.contains(query.targetID) && !landmarkState.contains(query.sourceID)) {
             resultList = pathCalculator.getAstarShortestPath(query);
-        // 可以利用landmark生成tighter lower bound 执行更快速的local landmark计算
-        // 大部分无法命中缓存的query都是在这里实际解决的
-        // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
+            // 可以利用landmark生成tighter lower bound 执行更快速的local landmark计算
+            // 大部分无法命中缓存的query都是在这里实际解决的
+            // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
         } else if (landmarkState.contains(query.targetID)) {
             resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
 //            pathCalculator.getAstarShortestPath(query);
@@ -485,22 +593,48 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 //            pathCalculator.getAstarShortestPath(query);
         }
         return resultList;
-     }
+    }
 
     /*
-    提供把路径序列添加进缓存的功能
+    想要新加入的缓存路径与当前缓存中所有缓存路径的相似性检查，我们的目的是让存入的缓存尽可能充满当前区域
+     */
+    private boolean checkSimilarity(MapState<Integer, Path> pathState, Path newPath) throws Exception {
+        S2Cell s2Cell = S2Cell.fromFacePosLevel(0, 0, ParametersPasser.granularity + 4);
+        double minDistance = s2Cell.getVertex(0).getDistance2(s2Cell.getVertex(1));
+        // 对当前缓存路径中的每一条进行距离检查，如果两条路径相交，则直接返回0小于minDistance
+        for (Path path : pathState.values()) {
+            if (newPath.getFirstVertex().getDistance2(path.getFirstVertex()) < minDistance &&
+            newPath.getLastVertex().getDistance2(path.getLastVertex()) < minDistance) {
+                logger.info("相似缓存");
+                return false;
+            }
+            if (newPath.getFirstVertex().getDistance2(path.getLastVertex()) < minDistance &&
+            newPath.getLastVertex().getDistance2(path.getFirstVertex()) < minDistance) {
+                logger.info("相似缓存");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /*
+    提供把路径序列添加进缓存的功能(需要添加进三个结构中path array ,inverted list, point index)
      */
     private void addCache(MapState<Integer, Path> pathState, MapState<String, ArrayList<Tuple2<Integer, Integer>>> vertexState,
-                          int pathID, List<String> pathSequence) throws Exception {
+                          ValueState<OurS2ClosestPointQuery<Tuple2<Integer, Integer>>> pointQueryState,
+                          Path path) throws Exception {
+        int pathID = path.pathID;
+        List<String> pathSequence = path.sequence;
         // 计算此缓存路径的距离，在缓存更新阶段中，优先排除length2更小的cache
         double length2 = TopologyGraph.getDistance2(TopologyGraph.getVertex(pathSequence.get(0)),
                 TopologyGraph.getVertex(pathSequence.get(pathSequence.size() - 1)));
         // 添加进Path表
-        Path path = new Path(pathID, pathSequence, length2);
+        path.setLength2(length2);
         pathState.put(pathID, path);
 
         // 添加进Vertex表(inverted map)
         int sequencePos = 0;
+        List<Tuple2<Integer, Integer>> dataList = new ArrayList<>(100);
         for (String dataIndex : pathSequence) {
             if (vertexState.contains(dataIndex)) {
                 vertexState.get(dataIndex).add(Tuple2.of(pathID, sequencePos));
@@ -510,8 +644,12 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 invertedList.add(Tuple2.of(pathID, sequencePos));
                 vertexState.put(dataIndex, invertedList);
             }
-            sequencePos++;
+            dataList.add(Tuple2.of(pathID, sequencePos));
+            ++sequencePos;
         }
+        pointQueryState.value().index().addAll(pathSequence, dataList);
+        // !!!是否需要立即刷新pointIndex我还不确定，待观察
+        pointQueryState.value().reset();
     }
 
     /*

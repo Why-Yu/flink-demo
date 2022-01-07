@@ -84,96 +84,42 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             if (queryInCluster(query, cluster, s2RegionCoverer)) {
                 query.setClusterID(cluster.clusterID);
                 // 如果query长度大于所属聚簇椭圆的a，则设为可缓存的
-                if (query.getDistance() > 0.5 * cluster.boundEllipse.constant) {
+                if (query.length > 0.5 * cluster.boundEllipse.constant) {
                     query.setCacheable(true);
                 }
                 collector.collect(query);
                 break;
             }
         }
+
         // clusterID还是初始值,说明在上一步根本没有匹配到
         if (query.clusterID.equals("NoMatched")) {
             int countID = IDSupplierState.value();
             // 依据方向窗口标识符和此窗口下的IDSupplier组合成为cluster的全局唯一ID
             String clusterID = context.getCurrentKey() + "-" + countID;
-            Cluster cluster = new Cluster(clusterID, query.getSource(), query.getTarget(), eccentricity);
-            clusterListState.add(cluster);
+            Cluster newCluster = new Cluster(clusterID, query.getSource(), query.getTarget(), eccentricity);
+            // 往聚簇列表中添加聚簇(排序以及冗余检查在函数内部进行)
+            addCluster(clusterListState, newCluster);
             query.setClusterID(clusterID);
             // 创建此cluster的query总是cacheable
             query.setCacheable(true);
             IDSupplierState.update(countID + 1);
-            // 添加进此轮次新加入cluster列表
-            newClusterListState.add(cluster);
             collector.collect(query);
         }
     }
 
     /*
-    融合cluster，尽量减少clusterList的冗余
-    判断依据是，若包含，则把小的cluster融合进大的cluster
-    融合计算是比较耗费计算资源的，所以我们每隔一段时间融合一次
+    判断分区是否收敛的计时器
      */
     @Override
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<Query> out) throws Exception {
-       // 当clusterList确实添加了新cluster再执行计算，不然就不需要浪费时间计算这些，节省资源
+        // 判断clusterList是否添加了新元素
+        // 若无新元素添加，则增加判断收敛计数器
         if (newClusterListState.get().iterator().hasNext()) {
-            // 准备融合的cluster list
-            List<Cluster> mergeList = new ArrayList<>();
-            // 准备接受融合检查的新加入cluster
-            List<Cluster> uncheckedList = new ArrayList<>();
-            // 记录下需要被融合的元素，其实也就是把对应元素在clusterListState删去
-            List<String> removeClusterList = new ArrayList<>();
-            for (Cluster cluster : clusterListState.get()) {
-                mergeList.add(cluster);
-            }
-
-            for (Cluster cluster : newClusterListState.get()) {
-                uncheckedList.add(cluster);
-            }
-            // !!!错误!!!默认按照升序排序，我们这里必须采用降序,list中按椭圆的2a由大到小
-            // 降序可以保证，在查询query落在哪一个cluster中时，可以按照cluster从大到小依次遍历!!!错误!!!
-            // --逻辑更正，我们认为，一个query应该尽可能更加local的解决，
-            // 越是放在local cluster中，搜索空间就会越小，cache的命中率也会更高，只有没办法时才把query放到大cluster中一般化解决
-            // 所以现更正为升序排序，同时新加入cluster也必须升序，保证按照从小到大的顺序接受检查
-            // 防止出现新加入cluster本身出现包含情况，但却不被检查
-            Collections.sort(mergeList);
-            Collections.sort(uncheckedList);
-
-            // 只需要在cluster首次加入的时候，查看一下比它小的cluster是否能融合进来就是完成了精确的融合计算
-            // 在原先的程序中每一次计时器都查看后一半能否融合进前一半的机械思路下(不仅机械，也是不精确的)
-            // 经过实验，发现即使是这样，计算量还是太大(在每秒喂16个query的情况下)，每个角度窗口下有很多cluster而contains的计算又很耗费资源
-            // 而其实很多融合计算都是重复的，因为之前实际上已经计算过融合情况
-            // 所以经过思考，我们增加一个state，用来记录本时间轮次新加入的cluster，因为只有queryInCluster全部返回false,才会加入新cluster
-            // 所以新加入的cluster必定不会被已有cluster包含，这样我们只需要检查比新加入的cluster小的已有cluster即可完成精确融合计算
-            // (题外话:聚簇不是覆盖越广越好，聚簇更加local一些对于解决落在其内部的query更加有效，但与此带来的问题是大query无法用小聚簇来解决)
-            for (Cluster cluster : uncheckedList) {  // 检查顺序必须有小到大
-                for (int i = 0 ; i < mergeList.size() ; ++i) {
-                    if (mergeList.get(i).clusterID.equals(cluster.clusterID)) {
-                        for (int j = 0; j < i ; ++j) {
-                            // 聚簇融合条件是大Cap完全包含了小Cap
-                            if (mergeList.get(i).contains(mergeList.get(j))) {
-                                // clusterID可以重复添加，这个是无所谓的
-                                removeClusterList.add(mergeList.get(j).clusterID);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
             // clear状态，为记录下一轮次做准备
             newClusterListState.clear();
-
-            if (removeClusterList.size() > 0) {
-                logger.info(removeClusterList.toString());
-                // 直接删除对应元素并对状态进行更新
-                mergeList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
-                clusterListState.update(mergeList);
-                timeCountState.update(0);
-            } else {
-                // 本次没有融合任何cluster,未融合计数器加一
-                int timeCount = timeCountState.value();
-                timeCountState.update(timeCount + 1);
-            }
+        } else {
+            timeCountState.update(timeCountState.value() + 1);
         }
 
         //如果还未收敛，则注册下一个计时器
@@ -213,5 +159,65 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         S2Cell targetCell = new S2Cell(cellIdArrayList.get(0));
         // 两个都相交，返回true，有一个未相交，返回false
         return cluster.boundEllipse.mayIntersect(targetCell);
+    }
+
+    /*
+    聚簇列表应是有序且冗余较小的
+    所以为保持有序，在添加新聚簇的过程中就找到其应该所处的index再加入
+    为保证冗余尽可能小，还需要加入时采取融合检查
+     */
+    private void addCluster(ListState<Cluster> clusterState, Cluster newCluster) throws Exception {
+        // 待处理的cluster list的暂存处
+        List<Cluster> mergeList = new ArrayList<>();
+        int pos = 0;
+        boolean hasFound = false;
+        // 我们认为，一个query应该尽可能更加local的解决，
+        // 越是放在local cluster中，搜索空间就会越小，cache的命中率也会更高，只有没办法时才把query放到大cluster中一般化解决
+        // 升序排序，同时新加入cluster也必须升序，保证按照从小到大的顺序接受检查
+        for (Cluster cluster : clusterState.get()) {
+            if (!hasFound && newCluster.compareTo(cluster) >= 0) {
+                ++pos;
+            } else {
+                hasFound = true;
+            }
+            mergeList.add(cluster);
+        }
+        mergeList.add(pos, newCluster);
+
+        // 移除列表中的冗余聚簇
+        removeRedundancy(mergeList, newCluster);
+        // 更新聚簇列表
+        clusterState.update(mergeList);
+        newClusterListState.add(newCluster);
+    }
+
+    /*
+    只需要在cluster首次加入的时候，查看一下比它小的cluster是否能融合进来就是完成了精确的融合计算
+    在原先的程序中是在每一次计时器触发时都查看后一半能否融合进前一半的机械思路下(不仅机械，也是不精确的)
+    经过实验，发现即使是这样，计算量还是太大(在每秒喂16个query的情况下)，每个角度窗口下有很多cluster而contains的计算又很耗费资源
+    而其实很多融合计算都是重复的，因为之前实际上已经计算过融合情况
+    因为新加入的cluster必定不会被已有cluster包含，这样我们只需要检查比新加入的cluster小的已有cluster即可完成精确融合计算
+    (题外话:聚簇不是覆盖越广越好，聚簇更加local一些对于解决落在其内部的query更加有效，但与此带来的问题是大query无法用小聚簇来解决)
+     */
+    private void removeRedundancy(List<Cluster> uncheckedList, Cluster newCluster) throws Exception {
+        // 记录下需要被融合的元素，其实也就是把对应元素在clusterListState删去
+        List<String> removeClusterList = new ArrayList<>();
+        for (int i = 0 ; i < uncheckedList.size() ; ++i) {
+            if (uncheckedList.get(i).clusterID.equals(newCluster.clusterID)) {
+                for (int j = 0; j < i ; ++j) {
+                    // 聚簇融合条件是大Cap完全包含了小Cap
+                    if (newCluster.contains(uncheckedList.get(j))) {
+                        removeClusterList.add(uncheckedList.get(j).clusterID);
+                    }
+                }
+                break;
+            }
+        }
+
+        // 若存在有对应的冗余聚簇，在列表中将其移除
+        if (removeClusterList.size() > 0) {
+            logger.info(removeClusterList.toString());
+            uncheckedList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
+        }
     }
 }

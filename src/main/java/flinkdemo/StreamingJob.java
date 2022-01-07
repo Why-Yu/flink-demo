@@ -80,7 +80,8 @@ public class StreamingJob {
 								parameterTool.getDouble("localCache.negligible"),
 								parameterTool.getInt("localCache.abandon"),
 								parameterTool.getInt("localCache.qualified"),
-								parameterTool.getInt("localCache.hotCluster")));
+								parameterTool.getInt("localCache.hotCluster"),
+								parameterTool.getDouble("localCache.errorBound")));
 //
 		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 

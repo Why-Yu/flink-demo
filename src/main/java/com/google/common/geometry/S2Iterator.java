@@ -19,6 +19,7 @@ import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.Function;
 import com.google.common.geometry.S2ShapeIndex.CellRelation;
 import com.google.common.primitives.UnsignedLongs;
+
 import java.util.List;
 
 /**
