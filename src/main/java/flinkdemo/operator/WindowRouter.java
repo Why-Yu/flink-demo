@@ -147,8 +147,6 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
                 // QueryCluster中，query匹配cluster应该采取的粒度
                 ParametersPasser.setGranularity(granularity);
                 // CacheAndLandmark中，partial hit搜索最近的缓存path中的点的范围
-                // 范围控制在query长度的2%以内
-                ParametersPasser.setMaxDistance(length2 * 4E-4);
                 logger.info("average更新:" + latestAverage + ",granularity更新" + granularity);
             }
         }

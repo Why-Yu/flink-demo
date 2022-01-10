@@ -121,6 +121,13 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         } else {
             timeCountState.update(timeCountState.value() + 1);
         }
+//        if (ctx.getCurrentKey() == 3) {
+//            int size = 0;
+//            for (Cluster cluster : clusterListState.get()) {
+//                ++size;
+//            }
+//            logger.info(String.valueOf(size));
+//        }
 
         //如果还未收敛，则注册下一个计时器
         if (timeCountState.value() < convergence) {
@@ -216,7 +223,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
 
         // 若存在有对应的冗余聚簇，在列表中将其移除
         if (removeClusterList.size() > 0) {
-            logger.info(removeClusterList.toString());
+//            logger.info(removeClusterList.toString());
             uncheckedList.removeIf(cluster -> removeClusterList.contains(cluster.clusterID));
         }
     }

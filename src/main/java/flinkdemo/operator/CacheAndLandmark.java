@@ -189,15 +189,19 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             if (qualifiedState.value() == 0) {
                 // 存储所属cluster的相关信息
                 ownerClusterState.update(query);
-                winnersQueryState.value().setMaxPoints(5);
-                candidatesQueryState.value().setMaxPoints(5);
+                OurS2ClosestPointQuery<Tuple2<Integer, Integer>> pointQuery = winnersQueryState.value();
+                pointQuery.setMaxPoints(5);
+                winnersQueryState.update(pointQuery);
+                pointQuery = candidatesQueryState.value();
+                pointQuery.setMaxPoints(5);
+                candidatesQueryState.update(pointQuery);
                 qualifiedState.update(qualifiedState.value() + 1);
                 // 小于10次query说明现在的cluster还没合格呢，很可能马上会被淘汰，不着急注册计时器的(目的是防止注册大量无用计时器)
             } else if (qualifiedState.value() < qualified) {
                 qualifiedState.update(qualifiedState.value() + 1);
                 // cluster合格了，说明可能是一个需要使用的cluster而不是马上被淘汰的那种
             } else {
-                logger.info(context.getCurrentKey() + "cluster注册计时器");
+//                logger.info(context.getCurrentKey() + "cluster注册计时器");
                 firstState.update(false);
                 long timer = context.timerService().currentProcessingTime();
                 long timeOffset = random.nextInt(6 * 1000) - 3000;
@@ -281,11 +285,16 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     @Override
     public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
         // 如果一个cluster经常被访问，是热点区域的话，我们适当扩大这个cluster下能容纳的cache大小
-        if (queryNumberState.value() > hotCluster && hotClusterSizeState.value() == winnersMaxSize) {
+        if (queryNumberState.value() > hotCluster / 2 && hotClusterSizeState.value() == winnersMaxSize) {
             hotClusterSizeState.update(winnersMaxSize * 4);
+        } else if (queryNumberState.value() > hotCluster && hotClusterSizeState.value() == winnersMaxSize * 4) {
+            hotClusterSizeState.update(winnersMaxSize * 10);
         }
 
         // 两个都不是空的，就进行缓存的更新(1、胜者组候选者组的交换 ； 2、候选者组清空 ； 3、胜者组所有count被重置为0)
+//        if (ctx.getCurrentKey().split("-")[0].equals("3")) {
+//            logger.info(winnersQueryState.value().index().entries.toString());
+//        }
         logger.info(ctx.getCurrentKey() + "的query number:" + queryNumberState.value() + "; winnersSize:" + winnersSizeState.value());
         // cache起码要拥有一些数据再进行update计算
         if (!winnersPathState.isEmpty() && !candidatesPathState.isEmpty()) {
@@ -337,11 +346,20 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 winnersVertexState.get(dataIndex).removeIf(tuple2 -> tuple2.f0 == pathID);
                 dataList.add(Tuple2.of(pathID, sequencePos));
             }
-            winnersQueryState.value().index().removeAll(outPath.sequence, dataList);
+            OurS2ClosestPointQuery<Tuple2<Integer, Integer>> pointQuery = winnersQueryState.value();
+            pointQuery.index().removeAll(outPath.sequence, dataList);
+            winnersQueryState.update(pointQuery);
 
 
             inPath.setCount(inPath.count / 2);
             addCache(winnersPathState, winnersVertexState, winnersQueryState, inPath);
+            OurS2ClosestPointQuery<Tuple2<Integer, Integer>> pointQuery1 = winnersQueryState.value();
+            // 如果没有刷新，直接需要强制立即刷新
+            if (pointQuery1.index().addCount != 0) {
+                pointQuery1.reset();
+            }
+            winnersQueryState.update(pointQuery1);
+
             candidatesPathState.clear();
             candidatesVertexState.clear();
             candidatesQueryState.update(new OurS2ClosestPointQuery<>(new OurS2PointIndex<>()));
@@ -647,9 +665,17 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             dataList.add(Tuple2.of(pathID, sequencePos));
             ++sequencePos;
         }
-        pointQueryState.value().index().addAll(pathSequence, dataList);
-        // !!!是否需要立即刷新pointIndex我还不确定，待观察
-        pointQueryState.value().reset();
+
+        OurS2ClosestPointQuery<Tuple2<Integer, Integer>> pointQuery = pointQueryState.value();
+        pointQuery.index().addAll(pathSequence, dataList);
+        // 攒到4个再一起刷新，不用立即刷新
+        if ( pointQuery.index().addCount == 4) {
+            pointQuery.index().addCount = 0;
+            pointQuery.reset();
+        }
+        // 修改完成后记得提交
+        logger.info(String.valueOf(pointQuery.index().entries.size()));
+        pointQueryState.update(pointQuery);
     }
 
     /*
