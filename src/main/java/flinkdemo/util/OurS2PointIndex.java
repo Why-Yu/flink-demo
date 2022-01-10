@@ -65,7 +65,6 @@ import java.util.List;
 public final class OurS2PointIndex<Data> {
     public final ArrayList<Entry<Data>> entries = Lists.newArrayList();
     public boolean sorted = true;
-    public int addCount = 0;
 
     /** Returns the number of points in the index. */
     public int numPoints() {
@@ -104,7 +103,6 @@ public final class OurS2PointIndex<Data> {
             ++index;
         }
         sorted = false;
-        ++addCount;
         entries.addAll(addList);
     }
 

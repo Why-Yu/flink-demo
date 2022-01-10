@@ -163,6 +163,10 @@ public final class OurS2ClosestPointQuery<T> {
         return region;
     }
 
+    public List<S2CellId> getIndexCovering() {
+        return indexCovering;
+    }
+
     /*
      * Sets the region in which point searches will be done, or clears the region if {@code region} is
      * null.

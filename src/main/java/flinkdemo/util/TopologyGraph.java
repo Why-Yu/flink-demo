@@ -182,38 +182,14 @@ public strictfp class TopologyGraph {
         return nodeList;
     }
 
-//    /**
-//     * 用户输入坐标后，获得网络中对应的起止点
-//     * @param floor
-//     * @param x
-//     * @param y
-//     * @return 与输入最近的Node
-//     */
-//    public static Node findNearNode(int floor, double x, double y){
-//        List<Vertex> vertexList = getVerticesInFloor(floor);
-//        double tempMin = Double.MAX_VALUE;
-//        double absolute;
-//        String tempDataIndex = floor + "-0";
-//
-//        for(Vertex vertex : vertexList){
-//            absolute = Math.abs(x - vertex.x) + Math.abs(y -vertex.y);
-//            if(absolute <= tempMin){
-//                tempMin = absolute;
-//                tempDataIndex = vertex.dataIndex;
-//            }
-//        }
-//        int verticesIndex = dataIndexToVerticesIndex.get(tempDataIndex);
-//        return new Node(tempDataIndex, floor, vertices.get(verticesIndex).x, vertices.get(verticesIndex).y, 0);
-//    }
-
-//    public static List<Vertex> getVerticesInFloor(int floor){
-//        List<Vertex> vertexList = new ArrayList<>();
-//        for(Vertex vertex : vertices){
-//            if(vertex.floor == floor)
-//                vertexList.add(vertex);
-//        }
-//        return vertexList;
-//    }
+    public static double getWeight(String pointS, String pointT) {
+        int verticesIndex = dataIndexToVerticesIndex.get(pointS);
+        NextNode current = vertices.get(verticesIndex).nextNode;
+        while (!current.dataIndex.equals(pointT)) {
+            current = current.nextNode;
+        }
+        return current.weight;
+    }
 
     public static int getNumOfVertices() {
         return vertices.size();
