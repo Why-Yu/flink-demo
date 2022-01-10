@@ -40,6 +40,8 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
     private transient ValueState<Double> averageState;
     // 批量更新的缓存位置
     private transient ValueState<Double> bufferLengthState;
+    // 当确定具体的粒度大小后就无需再计算了
+    private transient ValueState<Integer> stopState;
 
     // ******非常重要的总结
     // 问题在于，我们设置了三个逻辑分区，而有两个分区跑在一个线程上，一个分区跑在另一个线程上
@@ -64,10 +66,12 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
         ValueStateDescriptor<Double> averageStateDescriptor = new ValueStateDescriptor<Double>("average", Types.DOUBLE,
                 ParametersPasser.initialAverage);
         ValueStateDescriptor<Double> bufferLengthStateDescriptor = new ValueStateDescriptor<Double>("bufferLength", Types.DOUBLE, 0.0);
+        ValueStateDescriptor<Integer> stopStateDescriptor = new ValueStateDescriptor<>("stopState", Types.INT, 0);
         ValueStateDescriptor<Boolean> firstStateDescriptor = new ValueStateDescriptor<Boolean>("routerFirst", Types.BOOLEAN, true);
         countState = getRuntimeContext().getState(countStateDescriptor);
         averageState = getRuntimeContext().getState(averageStateDescriptor);
         bufferLengthState = getRuntimeContext().getState(bufferLengthStateDescriptor);
+        stopState = getRuntimeContext().getState(stopStateDescriptor);
         firstState = getRuntimeContext().getState(firstStateDescriptor);
     }
 
@@ -140,14 +144,20 @@ public class WindowRouter extends KeyedProcessFunction<Integer, Query, Query> {
             // (并且在误差如此小的情况下，通过latestAverage / 4替代，而不是使用精确的半径，我们可以节省大量计算)
             // 由于cap显著比椭圆面积大，所以我们对半径再除2变成latestAverage / 16
             if (context.getCurrentKey() == 1) {
-                double length2 = Math.pow(latestAverage, 2);
-                S2Cap s2Cap = S2Cap.fromAxisChord(new S2Point(1.0, 0.0, 0.0),
-                        S1ChordAngle.fromLength2(length2 / 16));
-                int granularity = TopologyGraph.getGranularity(s2Cap);
-                // QueryCluster中，query匹配cluster应该采取的粒度
-                ParametersPasser.setGranularity(granularity);
-                // CacheAndLandmark中，partial hit搜索最近的缓存path中的点的范围
-                logger.info("average更新:" + latestAverage + ",granularity更新" + granularity);
+                if (stopState.value() < 15) {
+                    double length2 = Math.pow(latestAverage, 2);
+                    S2Cap s2Cap = S2Cap.fromAxisChord(new S2Point(1.0, 0.0, 0.0),
+                            S1ChordAngle.fromLength2(length2 / 16));
+                    int granularity = TopologyGraph.getGranularity(s2Cap);
+                    if (granularity == ParametersPasser.getGranularity()) {
+                        stopState.update(stopState.value() + 1);
+                    } else {
+                        // QueryCluster中，query匹配cluster应该采取的粒度
+                        ParametersPasser.setGranularity(granularity);
+                        // CacheAndLandmark中，partial hit搜索最近的缓存path中的点的范围
+                        logger.info("average更新:" + latestAverage + ",granularity更新" + granularity);
+                    }
+                }
             }
         }
     }

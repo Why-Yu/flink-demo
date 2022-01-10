@@ -94,11 +94,10 @@ public final class OurS2PointIndex<Data> {
         entries.add(entry);
     }
 
-    public void addAll(List<String> pathSequence, List<Data> dataList) {
+    public void addAll(List<S2Point> pointList, List<Data> dataList) {
         ArrayList<Entry<Data>> addList = Lists.newArrayList();
         int index = 0;
-        for (String dataIndex : pathSequence) {
-            S2Point point = TopologyGraph.getVertex(dataIndex);
+        for (S2Point point : pointList) {
             addList.add(createEntry(point, dataList.get(index)));
             ++index;
         }
