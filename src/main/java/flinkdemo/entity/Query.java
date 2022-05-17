@@ -41,6 +41,12 @@ public class Query implements Serializable {
         this.target = target;
     }
 
+    /**
+     * 获得与当前query起终点相反的query
+     */
+    public Query getOppositeQuery() {
+        return new Query(targetID, sourceID, target, source);
+    }
 
     public int getPartition() {
         return partition;

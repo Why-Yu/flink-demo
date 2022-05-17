@@ -15,8 +15,6 @@
  */
 package com.google.common.geometry;
 
-import static com.google.common.geometry.S2Projections.PROJ;
-
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.Ascii;
 import com.google.common.base.CharMatcher;
@@ -27,11 +25,14 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.UnmodifiableIterator;
 import com.google.common.primitives.UnsignedLongs;
 import com.google.errorprone.annotations.Immutable;
+
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+
+import static com.google.common.geometry.S2Projections.PROJ;
 
 /**
  * An S2CellId is a 64-bit unsigned integer that uniquely identifies a cell in the S2 cell
@@ -123,6 +124,9 @@ public final strictfp class S2CellId implements Comparable<S2CellId>, Serializab
 
   private static final S2CellId NONE = new S2CellId();
   private static final S2CellId SENTINEL = new S2CellId(MAX_UNSIGNED);
+
+  // 用于截取cellId的部分key，作为掩码
+  private static final long MASK = 255;
 
   /**
    * This is the offset required to wrap around from the beginning of the Hilbert curve to the end
@@ -364,6 +368,16 @@ public final strictfp class S2CellId implements Comparable<S2CellId>, Serializab
       return MAX_LEVEL;
     }
     return MAX_LEVEL - (Long.numberOfTrailingZeros(id) >> 1);
+  }
+
+  /** 以4层作为我们radix tree的一层，此函数能截取64位cellId中间的某8位，并返回byte
+   * level表示的是radix tree的层数，不是cell所属的全球格网的层数
+   * 可输入的值为1,2,3,4
+   */
+  public short getPartialKey(int level) {
+    // 直接向右移位，注意开头三位是面，最后一位固定为1，直接得出公式(61 - 8 * level)
+    long parentId = id >>> (61 - 8 * level);
+    return (short) (MASK & parentId);
   }
 
   /** As {@link #getSizeIJ(int)}, using the level of this cell. */

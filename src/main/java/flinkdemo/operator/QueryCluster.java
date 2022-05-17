@@ -4,9 +4,15 @@ import com.google.common.geometry.S2Cell;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2RegionCoverer;
 import flinkdemo.entity.Cluster;
+import flinkdemo.entity.Point;
 import flinkdemo.entity.Query;
 import flinkdemo.util.ParametersPasser;
-import org.apache.flink.api.common.state.*;
+import flinkdemo.util.visual.GrahamScan;
+import flinkdemo.util.visual.JdbcConnection;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
@@ -14,7 +20,9 @@ import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
 
 /*
 !!!功能：对query进行搜索空间预估并把相关度最高的query都划分到同一个cluster中去
@@ -136,9 +144,17 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         } else {
             // 判断结果已收敛
             logger.info(ctx.getCurrentKey() + "分区聚簇已收敛");
+            S2RegionCoverer s2RegionCoverer = S2RegionCoverer.builder().setMinLevel(ParametersPasser.granularity)
+                    .setMaxLevel(ParametersPasser.granularity).build();
+            ArrayList<S2CellId> s2Cells = new ArrayList<>();
+            JdbcConnection jdbcConnection = new JdbcConnection();
+
             for (Cluster cluster : clusterListState.get()) {
-                logger.info(cluster.clusterID + "constant:" + String.valueOf(cluster.boundEllipse.constant));
+                s2RegionCoverer.getCovering(cluster.boundEllipse, s2Cells);
+                List<Point> points = GrahamScan.toPointList(s2Cells);
+                jdbcConnection.addCluster(ctx.getCurrentKey(), GrahamScan.getConvexHull(points));
             }
+            jdbcConnection.close();
         }
     }
 

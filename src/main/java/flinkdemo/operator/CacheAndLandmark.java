@@ -230,7 +230,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 如果没有匹配到则此对象会是null，所以再进行部分匹配
         if (pathSequence == null) {
             // 进行部分匹配
-            pathSequence = checkPartialMatch(query, matchResult);
+//            pathSequence = checkPartialMatch(query, matchResult);
             // 如果没有匹配到则此对象依旧是null，所以再进行ALLT算法或是A*
             if (pathSequence == null) {
                 // 只有注册了计时器，才可以使用ALLT算法，不然直接生成landmark以及cache会永远无法消除，但是很可能又是没用的
@@ -462,7 +462,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         return null;
     }
 
-    /*
+    /**
     从inverted map(即winnersVertexState或candidatesVertexState)查找是否有匹配的cache
     query为当前需要匹配的请求
     matchResult存储匹配结果
@@ -487,7 +487,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         return false;
     }
 
-    /*
+    /**
     查找是否有部分缓存的匹配
     思路是分别对每一个缓存路径都维护一个pointQuery，其中快速缩小匹配点的范围由indexCovering和maxDistance的cell交集选择
      */
@@ -552,7 +552,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         return matchResult.f0 != 0;
     }
 
-    /*
+    /**
    获得部分缓存命中下的路径
     */
     private List<String> getPartialHitPath(MapState<Integer, Path> pathMapState,
@@ -575,7 +575,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         return pathSequence;
     }
 
-    /*
+    /**
     利用匹配结果，获取对应路径下的子序列
      */
     private List<String> getSubPath(MapState<Integer, Path> pathMapState,
@@ -603,10 +603,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         return subSequence;
     }
 
-    /*
+    /**
     ALLT算法的具体逻辑
     相关具体实现集中在PathCalculator中
-    逻辑为，当前聚簇的第一个请求执行麻烦但搜索空间大的计算，以生成landmark
+    逻辑为，当前聚簇的第一个请求执行麻烦但搜索空间大的计算，以生成landmark(我们选择A*，Dijkstra的搜索空间过于大了)
     在可能的情况下，尽量使用local landmark(并在内部也尽一切可能使用landmark来生成lower bound)，如果没法使用，回退到A*逃生
      */
     private List<String> ALLT(Query query, MapState<String, Double> sourceLandmarkState,
@@ -618,51 +618,56 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             // 获得representative query生成local landmark
             Query representativeQuery = ownerClusterState.value();
             // 计算得到结果
-            pathCalculator.getDijkstraShortestPath(representativeQuery);
+            pathCalculator.getAstarShortestPath(representativeQuery);
             HashMap<String, Double> sourceLandmarkHashMap = pathCalculator.getCloseMap();
             // representative query的closeMap刚好是作为我们的landmark
             // 记得先putAll再算下一个landmark，不然closeMap会被清空
             sourceLandmarkState.putAll(sourceLandmarkHashMap);
             // 获得相反方向的representativeQuery
-            Query oppositeQuery = new Query(representativeQuery.targetID, representativeQuery.sourceID,
-                    representativeQuery.target, representativeQuery.source);
-            pathCalculator.getDijkstraShortestPath(oppositeQuery);
+            Query oppositeQuery = representativeQuery.getOppositeQuery();
+            pathCalculator.getAstarShortestPath(oppositeQuery);
             HashMap<String, Double> targetLandmarkHashMap = pathCalculator.getCloseMap();
             targetLandmarkState.putAll(targetLandmarkHashMap);
         }
 
-        // 计算用那一个landmark更加合适
-        boolean isSource = chooseLandmark(query, ownerClusterState);
-        if (isSource) {
-            return getLandmarkShortestPath(query, sourceLandmarkState, pathCalculator);
-        } else {
-            return getLandmarkShortestPath(query, targetLandmarkState, pathCalculator);
-        }
+        // 由于landmark中不一定拥有当前query起终点的距离数据，故还需要有逻辑做具体调用的函数的判断逻辑
+        // 即尽可能利用两个landmark,有部分缺失尝试能否利用其一，最后用A*逃生
+        return getLandmarkShortestPath(query, sourceLandmarkState, targetLandmarkState, pathCalculator);
     }
 
-    /*
-    进一步判断是否需要回退到A*逃生，以及选择具体的搜索方向
+    /**
+    进一步判断能否两个landmark都利用上,还是回退到A*逃生
     (由于S到T和T到S实际上是等价的，都包含的情况下选择哪一个都一样
     所以我们主要是考虑，landmark只包含了其中一个点的情况，选择包含的点作为实际的起始搜索点)
      */
-    private List<String> getLandmarkShortestPath(Query query, MapState<String, Double> landmarkState,
+    private List<String> getLandmarkShortestPath(Query query, MapState<String, Double> sourceLandmarkState,
+                                                 MapState<String, Double> targetLandmarkState,
                                                  PathCalculator pathCalculator) throws Exception {
         List<String> resultList;
-        // 如果landmark中都不包含query的起终点，那么我们无法利用三角不等式生成lower bound，则回退到A*
-        if (!landmarkState.contains(query.targetID) && !landmarkState.contains(query.sourceID)) {
-            resultList = pathCalculator.getAstarShortestPath(query);
-            // 可以利用landmark生成tighter lower bound 执行更快速的local landmark计算
-            // 大部分无法命中缓存的query都是在这里实际解决的
+        boolean isTargetInSL = sourceLandmarkState.contains(query.targetID);
+        boolean isTargetInTL = targetLandmarkState.contains(query.targetID);
+        boolean isSourceInSL = sourceLandmarkState.contains(query.sourceID);
+        boolean isSourceInTL = targetLandmarkState.contains(query.sourceID);
+        // 如果landmark中都包含query终点或者都包含query起点，那么我们使用两个landmark执行ALT算法
+        // 利用landmark生成tighter lower bound 执行更快速的local landmark计算
+        // 大部分无法命中缓存的query都是在这里和下一个判断分支这两个分支流中实际解决的
+        if (isTargetInSL && isTargetInTL) {
+            resultList = pathCalculator.getLandmarkShortestPath(query, sourceLandmarkState, targetLandmarkState);
+        } else if (isSourceInSL && isSourceInTL) {
+            resultList = pathCalculator.getLandmarkShortestPath(query.getOppositeQuery(), sourceLandmarkState, targetLandmarkState);
+        } else if (isTargetInSL){
             // 此判断解决的问题是如果起终点只有一个包含在landmark中怎么办以及我们选择哪一个点作为实际计算的终点，即确定搜索方向
-        } else if (landmarkState.contains(query.targetID)) {
-            resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, true);
-//            pathCalculator.getAstarShortestPath(query);
+            // 由于source target是等价的，所以我们默认从sourceLandmark开始判断，先后顺序并没有特殊意义
+            resultList = pathCalculator.getLandmarkShortestPath(query, sourceLandmarkState);
+        } else if (isTargetInTL) {
+            resultList = pathCalculator.getLandmarkShortestPath(query, targetLandmarkState);
+        } else if (isSourceInSL) {
+            resultList = pathCalculator.getLandmarkShortestPath(query.getOppositeQuery(), sourceLandmarkState);
+        } else if (isSourceInTL) {
+            resultList = pathCalculator.getLandmarkShortestPath(query.getOppositeQuery(), targetLandmarkState);
         } else {
-            resultList = pathCalculator.getLandmarkShortestPath(query, landmarkState, false);
-//            S2Point temp = query.target;
-//            query.setTarget(query.source);
-//            query.setSource(temp);
-//            pathCalculator.getAstarShortestPath(query);
+            // 起终点都不在landmark表中，回退到A*逃生
+            resultList = pathCalculator.getAstarShortestPath(query);
         }
         return resultList;
     }
@@ -753,7 +758,10 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 
     /*
     根据landmark behind query的程度，选择更适合的landmark
+    此函数以及下面被调用的函数被废弃，因为我们经过实验发现，通过角度判断适合landmark是错误的以及通过距离判断也是不对的
+    故我们现在的思路是尽最大可能利用起两个landmark以最小化搜索空间，已经不存在有选择更合适的landmark这层逻辑
      */
+    @Deprecated
     private boolean chooseLandmark(Query query, ValueState<Query> ownerClusterState) throws Exception {
         // 形成四个点的墨卡托投影经纬度
         S2LatLng s2LatLngS = new S2LatLng(ownerClusterState.value().source);
@@ -776,6 +784,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
     /*
     获取角度cos的绝对值
      */
+    @Deprecated
     private double getAbsCos(S2LatLng s2LatLngS, S2LatLng s2LatLngT) {
         double dotProd = s2LatLngS.lngRadians() * s2LatLngT.lngRadians() + s2LatLngS.latRadians() * s2LatLngT.latRadians();
         double normS = Math.sqrt(Math.pow(s2LatLngS.lngRadians(), 2) + Math.pow(s2LatLngS.latRadians(), 2));

@@ -44,7 +44,10 @@ public strictfp class PathCalculator {
         this.minHeap = new BinaryMinHeap<>(Node.class, capacity / 2);
     }
 
-    public List<String> getLandmarkShortestPath(Query query, MapState<String, Double> landmarkState, boolean direction) throws Exception {
+    /**
+     * query.target就是搜索的终点，需要注意输入的query的方向
+     */
+    public List<String> getLandmarkShortestPath(Query query, MapState<String, Double> landmarkState) throws Exception {
         // 如果路径计算器已经被使用过，把map刷新一下
         // 但实际上我们现有代码一次query只会调用一次路径计算，并不会重复使用路径计算器(这样写是为了以后扩展时，防止出现意外错误)
         if (isUsed) {
@@ -52,26 +55,12 @@ public strictfp class PathCalculator {
         }
         // ----- 初始化工作
         List<String> resultList = new ArrayList<>(200);
-        Node currentNode;
-        double viewDistance;
-        String goalID;
-        S2Point goal;
-        // 如果是true，表明以target作为搜索终点，则初始当前节点为source
-        if (direction) {
-            viewDistance = landmarkState.get(query.targetID);
-            goalID = query.targetID;
-            goal = query.target;
-            currentNode = new Node(query.sourceID, query.source, 0.0);
-            closeMap.put(query.sourceID, 0.0);
-        } else { //否则以source作为搜索终点
-            viewDistance = landmarkState.get(query.sourceID);
-            goalID = query.sourceID;
-            goal = query.source;
-            currentNode = new Node(query.targetID, query.target, 0.0);
-            closeMap.put(query.targetID, 0.0);
-        }
+        Node currentNode = new Node(query.sourceID, query.source, 0.0);;
+        double viewDistance = landmarkState.get(query.targetID);;
+        String goalID = query.targetID;;
+        S2Point goal = query.target;;
+        closeMap.put(query.sourceID, 0.0);
         // -----
-
         //---test
 //        double total = 0;
 //        double better = 0;
@@ -136,6 +125,99 @@ public strictfp class PathCalculator {
 //                getDistance(new Node("1", query.source, 0.0), query.target));
 //        logger.info("landmark:" + String.valueOf(total) + "   query:" + query.sourceID);
 //        logger.info("landmark resolve");
+        return resultList;
+    }
+
+    /**
+     * 注意：这里的query.target必须要在landmark表中有值，
+     * 所以在调用它的算子中，如果是把source当作target，则需要把要把query的起终点调转
+     */
+    public List<String> getLandmarkShortestPath(Query query, MapState<String, Double> sourceLandmarkState,
+                                                MapState<String, Double> targetLandmarkState) throws Exception {
+        // 如果路径计算器已经被使用过，把map刷新一下
+        // 但实际上我们现有代码一次query只会调用一次路径计算，并不会重复使用路径计算器(这样写是为了以后扩展时，防止出现意外错误)
+        if (isUsed) {
+            refresh();
+        }
+        // ----- 初始化工作
+        List<String> resultList = new ArrayList<>(100);
+        Node currentNode = new Node(query.sourceID, query.source, 0.0);
+        double sourceEndDistance = sourceLandmarkState.get(query.targetID);;
+        double targetEndDistance = targetLandmarkState.get(query.targetID);;
+        String goalID = query.targetID;
+        S2Point goal = query.target;
+        closeMap.put(query.sourceID, 0.0);
+        // -----
+
+        //---test
+//        double total = 0;
+//        double better = 0;
+        //---
+        // -----算法开始
+        while (!currentNode.dataIndex.equals(goalID)) {
+            for (Node node : TopologyGraph.getUnclosedLinkedNode(currentNode, closeMap)) {
+                // openMap中不存在说明是第一次被扩展到，计算启发函数值，加入openMap
+                if (!openMap.containsKey(node.dataIndex)) {
+                    // landmarkState可能返回为null，因为我们使用的是local landmark。用optional包装
+                    Optional<Double> optS = Optional.ofNullable(sourceLandmarkState.get(node.dataIndex));
+                    // 不为null，计算lower bound，否则使用三维直线距离当作逃生，计算lower bound
+                    // Math.abs的本质是Math.max(d(l, a) - d(l, b), d(l, b) - d(l, a))
+                    double eDistance = getDistance(node, goal);
+                    double heuristics = optS.map(distance -> Math.abs(sourceEndDistance - distance))
+                            .orElseGet(() -> getDistance(node, goal));
+                    if (heuristics < eDistance) {
+                        heuristics = eDistance;
+                    }
+
+                    Optional<Double> optT = Optional.ofNullable(targetLandmarkState.get(node.dataIndex));
+                    double heuristics2 = optT.map(distance -> Math.abs(targetEndDistance - distance))
+                            .orElseGet(() -> getDistance(node, goal));
+                    if (heuristics < heuristics2) {
+                        heuristics = heuristics2;
+                    }
+                    // --- test begin
+//                    total += 1;
+//                    double distance = getDistance(node , goal);
+//                    if (heuristics > distance) {
+//                        logger.info("h:" + heuristics + "   d:" + distance);
+//                        better += 1;
+//                    }
+                    // --- test end
+                    node.total = node.gCost + heuristics;
+                    node.parent = currentNode;
+                    openMap.put(node.dataIndex, node);
+                    minHeap.add(node);
+                } else {
+                    // 如果当前的扩展出去的节点其路径由于之前扩展到此节点的路径，则进行更新
+                    if (openMap.get(node.dataIndex).gCost > node.gCost) {
+                        Node revisedNode = openMap.get(node.dataIndex);
+                        revisedNode.total = revisedNode.total - (revisedNode.gCost - node.gCost);
+                        revisedNode.gCost = node.gCost;
+                        revisedNode.parent = currentNode;
+                        minHeap.swim(revisedNode);
+                    }
+                }
+            }
+            // 更新currentNode，closeMap，openMap
+            if (!openMap.isEmpty()) {
+                currentNode = minHeap.delMin();
+                closeMap.put(currentNode.dataIndex, currentNode.gCost);
+                openMap.remove(currentNode.dataIndex);
+            } else {
+                return new ArrayList<>();
+            }
+        }
+        // ----- 算法结束
+
+        isUsed = true;
+        // 生成结果路径
+        while (currentNode != null) {
+            resultList.add(currentNode.dataIndex);
+            currentNode = currentNode.parent;
+        }
+//        logger.info("加速比例:" + String.valueOf(better / total) + "   total:" + total + "   resultSize:" + resultList.size()
+//                + "   openMapSize:" + openMap.size() + "   closeMap:" + closeMap.size() + "   length:" +
+//                getDistance(new Node("1", query.source, 0.0), query.target));
         return resultList;
     }
 
