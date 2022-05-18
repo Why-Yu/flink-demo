@@ -82,7 +82,9 @@ public class RadixTree {
                 if (tempNode == null) {
                     if (currentNode.isFull()) {
                         TreeNode newNode = currentNode.grow();
-                        prevNode.update(partialKey, newNode);
+                        // 要在上一层级更新引用，故partialKey也需要使用上一层级
+                        short prePartialKey = s2CellId.getPartialKey(level - 1);
+                        prevNode.update(prePartialKey, newNode);
                         currentNode = newNode;
                     }
 
@@ -96,6 +98,10 @@ public class RadixTree {
                         currentNode = currentNode.insert(partialKey);
                     }
                 } else {
+                    // 由于缓冲区添加，所以即使找到节点也要尝试嵌入左右两边的缓冲区格网
+                    if (level == 4) {
+                        currentNode.insert(partialKey, pathID, count - 1);
+                    }
                     prevNode = currentNode;
                     currentNode = tempNode;
                 }
@@ -129,25 +135,36 @@ public class RadixTree {
             // 根节点无需保存
             TreeNode[] nodeList = new TreeNode[4];
             short[] partialKeyList = new short[4];
+            // 由于我们执行的是缓冲区删除，故删除的时候可能会把周边的节点也一起删除，造成后续节点使用getByPartialKey时返回空指针
+            // 我们利用此变量来进行安全的删除操作
+            boolean isDeleteBefore = false;
 
             // 从上到下逐层保存信息
             while (level <= MAX_LEVEL) {
                 partialKey = s2CellId.getPartialKey(level);
                 partialKeyList[level - 1] = partialKey;
                 currentNode = currentNode.getByPartialKey(partialKey);
+                // 如果返回空指针并且当前层数小于最高层级，说明包含此节点的LeafNode256已经被删除了
+                // 所以后续计算全部跳过即可
+                if (currentNode == null && level < MAX_LEVEL) {
+                    isDeleteBefore = true;
+                    break;
+                }
                 nodeList[level - 1] = currentNode;
                 ++level;
             }
 
-            // 从下到上，逐层删除(如果有一层不是空的，则可以直接跳出循环)
-            for (int i = 2 ; i >= 0 ; --i) {
-                nodeList[i].delete(partialKeyList[i + 1], pathID);
-                if (!nodeList[i].isEmpty()) {
-                    break;
+            if (!isDeleteBefore) {
+                // 从下到上，逐层删除(如果有一层不是空的，则可以直接跳出循环)
+                for (int i = 2 ; i >= 0 ; --i) {
+                    nodeList[i].delete(partialKeyList[i + 1], pathID);
+                    if (!nodeList[i].isEmpty()) {
+                        break;
+                    }
                 }
-            }
-            if (nodeList[0].isEmpty()) {
-                root.delete(partialKeyList[0], pathID);
+                if (nodeList[0].isEmpty()) {
+                    root.delete(partialKeyList[0], pathID);
+                }
             }
         }
     }

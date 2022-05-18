@@ -5,7 +5,7 @@ public class LeafNode256 implements TreeNode{
 
     private byte size;
 
-    private static final int ERROR_BOUND = 3;
+    private static final int ERROR_BOUND = 12;
 
     public LeafNode256() {
         this.pointers = new LeafNode[256];

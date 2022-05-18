@@ -4,11 +4,8 @@ import com.google.common.geometry.S2Cell;
 import com.google.common.geometry.S2CellId;
 import com.google.common.geometry.S2RegionCoverer;
 import flinkdemo.entity.Cluster;
-import flinkdemo.entity.Point;
 import flinkdemo.entity.Query;
 import flinkdemo.util.ParametersPasser;
-import flinkdemo.util.visual.GrahamScan;
-import flinkdemo.util.visual.JdbcConnection;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
@@ -144,17 +141,19 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
         } else {
             // 判断结果已收敛
             logger.info(ctx.getCurrentKey() + "分区聚簇已收敛");
-            S2RegionCoverer s2RegionCoverer = S2RegionCoverer.builder().setMinLevel(ParametersPasser.granularity)
-                    .setMaxLevel(ParametersPasser.granularity).build();
-            ArrayList<S2CellId> s2Cells = new ArrayList<>();
-            JdbcConnection jdbcConnection = new JdbcConnection();
-
-            for (Cluster cluster : clusterListState.get()) {
-                s2RegionCoverer.getCovering(cluster.boundEllipse, s2Cells);
-                List<Point> points = GrahamScan.toPointList(s2Cells);
-                jdbcConnection.addCluster(ctx.getCurrentKey(), GrahamScan.getConvexHull(points));
-            }
-            jdbcConnection.close();
+            // --- 聚簇收敛时，所有聚簇可视化代码
+//            S2RegionCoverer s2RegionCoverer = S2RegionCoverer.builder().setMinLevel(ParametersPasser.granularity)
+//                    .setMaxLevel(ParametersPasser.granularity).build();
+//            ArrayList<S2CellId> s2Cells = new ArrayList<>();
+//            JdbcConnection jdbcConnection = new JdbcConnection();
+//
+//            for (Cluster cluster : clusterListState.get()) {
+//                s2RegionCoverer.getCovering(cluster.boundEllipse, s2Cells);
+//                List<Point> points = GrahamScan.toPointList(s2Cells);
+//                jdbcConnection.addCluster(ctx.getCurrentKey(), GrahamScan.getConvexHull(points));
+//            }
+//            jdbcConnection.close();
+            // --- 聚簇收敛时，所有聚簇可视化代码
         }
     }
 

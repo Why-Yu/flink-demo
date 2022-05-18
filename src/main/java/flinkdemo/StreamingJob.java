@@ -75,13 +75,11 @@ public class StreamingJob {
 
 		DataStream<String> landmarkResultDataStream = preparedDataStream.keyBy(Query::getClusterID)
 						.process(new CacheAndLandmark(parameterTool.getInt("localCache.winners.MaxSize"),
-								parameterTool.getInt("localCache.candidates.MaxSize"),
 								parameterTool.getInt("localCache.convergence"),
 								parameterTool.getDouble("localCache.negligible"),
 								parameterTool.getInt("localCache.abandon"),
 								parameterTool.getInt("localCache.qualified"),
-								parameterTool.getInt("localCache.hotCluster"),
-								parameterTool.getDouble("localCache.errorBound")));
+								parameterTool.getInt("localCache.hotCluster")));
 //
 		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 

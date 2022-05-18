@@ -69,10 +69,13 @@ public class TreeNode4 implements TreeNode{
                     partialKeys[i] = 0;
                     pointers[i] = null;
                 } else {
-                    for (int j = i ; j < size ; ++j) {
+                    // 遍历到size - 1，防止index超限
+                    for (int j = i ; j < size - 1 ; ++j) {
                         partialKeys[j] = partialKeys[j + 1];
                         pointers[j] = pointers[j + 1];
                     }
+                    partialKeys[size - 1] = 0;
+                    pointers[size - 1] = null;
                 }
             }
         }
