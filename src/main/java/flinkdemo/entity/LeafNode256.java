@@ -1,11 +1,13 @@
 package flinkdemo.entity;
 
+import java.util.List;
+
 public class LeafNode256 implements TreeNode{
     public LeafNode[] pointers;
 
     private byte size;
 
-    private static final int ERROR_BOUND = 12;
+    private static final int ERROR_BOUND = 10;
 
     public LeafNode256() {
         this.pointers = new LeafNode[256];
@@ -38,18 +40,22 @@ public class LeafNode256 implements TreeNode{
      */
     @Override
     public TreeNode insert(short partialKey, int pathID, int sequencePos) {
-        LeafNode leafNode = new LeafNode(pathID, sequencePos);
         short left = (short) Math.max(partialKey - ERROR_BOUND, 0);
         short right = (short) Math.min(partialKey + ERROR_BOUND, 255);
         while (left <= right) {
-            // 只对没有赋值过的格网进行赋值
+            // 对没有赋值过的格网进行赋值
             if (pointers[left] == null) {
+                pointers[left] = new LeafNode(pathID, sequencePos);
                 ++size;
-                pointers[left] = leafNode;
+                // 对已经被不同缓存路径赋值过的格网进行当前缓存路径的赋值
+            } else if (!pointers[left].getPathID().contains(pathID)) {
+                pointers[left].getPathID().add(pathID);
+                pointers[left].getLeafValue().add(sequencePos);
             }
             ++left;
         }
-        return leafNode;
+        // 这个函数的返回值没有意义，直接返回null即可
+        return null;
     }
 
     /**
@@ -60,9 +66,13 @@ public class LeafNode256 implements TreeNode{
         short left = (short) Math.max(partialKey - ERROR_BOUND, 0);
         short right = (short) Math.min(partialKey + ERROR_BOUND, 255);
         while (left <= right) {
-            if (pointers[left] != null && pointers[left].getPathID() == pathID) {
-                pointers[left] = null;
-                --size;
+            if (pointers[left] != null && pointers[left].getPathID().contains(pathID)) {
+                if (pointers[left].getPathID().size() == 1) {
+                    pointers[left] = null;
+                    --size;
+                } else {
+                    pointers[left].delete(partialKey, pathID);
+                }
             }
             ++left;
         }
@@ -102,12 +112,12 @@ public class LeafNode256 implements TreeNode{
     }
 
     @Override
-    public int getPathID() {
-        return 0;
+    public List<Integer> getPathID() {
+        return null;
     }
 
     @Override
-    public int getLeafValue() {
-        return -1;
+    public List<Integer> getLeafValue() {
+        return null;
     }
 }

@@ -1,5 +1,7 @@
 package flinkdemo.entity;
 
+import java.util.List;
+
 /**
  * 有一个设计细节是，指针数组的长度是49，而我们这个节点的容量本来只是想设计为48
  * 目的是为了解决byte数组默认值为0带来了误判问题
@@ -105,12 +107,12 @@ public class TreeNode48 implements TreeNode{
     }
 
     @Override
-    public int getPathID() {
-        return 0;
+    public List<Integer> getPathID() {
+        return null;
     }
 
     @Override
-    public int getLeafValue() {
-        return -1;
+    public List<Integer> getLeafValue() {
+        return null;
     }
 }

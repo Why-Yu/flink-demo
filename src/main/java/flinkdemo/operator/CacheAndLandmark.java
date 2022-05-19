@@ -412,10 +412,16 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
             return false;
         }
 
-        if (sourceNode.getPathID() == targetNode.getPathID()) {
-            logger.info("partial hit");
-            matchResult.setFields(sourceNode.getPathID(), sourceNode.getLeafValue(), targetNode.getLeafValue());
-            return true;
+        List<Integer> pathIDS = sourceNode.getPathID();
+        List<Integer> pathIDT = targetNode.getPathID();
+        for (int i = 0 ; i < pathIDS.size() ; ++i) {
+            for (int j = 0 ; j < pathIDT.size() ; ++j) {
+                if (Objects.equals(pathIDS.get(i), pathIDT.get(j))) {
+                    logger.info("partial hit");
+                    matchResult.setFields(pathIDS.get(i), sourceNode.getLeafValue().get(i), targetNode.getLeafValue().get(j));
+                    return true;
+                }
+            }
         }
         return false;
     }

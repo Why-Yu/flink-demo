@@ -1,5 +1,7 @@
 package flinkdemo.entity;
 
+import java.util.List;
+
 /**
  * 对于TreeNode中的各个函数，我的设计思路是每个函数各司其职
  * 具体的逻辑组合放到radixTree中进行
@@ -129,12 +131,12 @@ public class TreeNode4 implements TreeNode{
     }
 
     @Override
-    public int getPathID() {
-        return 0;
+    public List<Integer> getPathID() {
+        return null;
     }
 
     @Override
-    public int getLeafValue() {
-        return -1;
+    public List<Integer> getLeafValue() {
+        return null;
     }
 }

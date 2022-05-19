@@ -1,5 +1,7 @@
 package flinkdemo.entity;
 
+import java.util.List;
+
 public class TreeNode256 implements TreeNode{
     public TreeNode[] pointers;
 
@@ -88,12 +90,12 @@ public class TreeNode256 implements TreeNode{
     }
 
     @Override
-    public int getPathID() {
-        return 0;
+    public List<Integer> getPathID() {
+        return null;
     }
 
     @Override
-    public int getLeafValue() {
-        return -1;
+    public List<Integer> getLeafValue() {
+        return null;
     }
 }

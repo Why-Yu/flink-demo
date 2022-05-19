@@ -1,5 +1,7 @@
 package flinkdemo.entity;
 
+import java.util.List;
+
 /**
  * 字典树中每个节点的基本应完成的功能
  * (部分冗余，主要是想把指针节点和值节点统一起来)
@@ -63,12 +65,12 @@ public interface TreeNode {
     /**
      * 叶子节点获取对应的pathID
      */
-    int getPathID();
+    List<Integer> getPathID();
 
     /**
      * 叶子节点获取对应的点在缓存路径上的位置
      */
-    int getLeafValue();
+    List<Integer> getLeafValue();
 
 
 }
