@@ -1,6 +1,7 @@
 package flinkdemo.entity;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * 对于TreeNode中的各个函数，我的设计思路是每个函数各司其职
@@ -59,7 +60,7 @@ public class TreeNode4 implements TreeNode{
      *只有叶子节点才会调用这个，所以在这里此函数只是占位
      */
     @Override
-    public TreeNode insert(short partialKey, int pathID, int sequencePos) {
+    public TreeNode insert(Set<Short> partialKeys, int pathID, int sequencePos) {
         return null;
     }
 

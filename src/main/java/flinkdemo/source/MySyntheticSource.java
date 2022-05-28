@@ -27,11 +27,12 @@ public class MySyntheticSource implements SourceFunction<Query> {
 //            int partition = 1;
             // 如果不加1,生成的随机数区间是[0,boundSize)
             // 我们需要的是[1,boundSize + 1)
-            int source = random.nextInt(boundSize) + 1;
-            int target = random.nextInt(boundSize) + 1;
+            // 这里进行移位处理是因为我们想要模拟输入的请求是从固定的POI集合中选取的
+            int source = ((random.nextInt(boundSize) >>> 3) << 3) + 1;
+            int target = ((random.nextInt(boundSize) >>> 3) << 3) + 1;
             // 避免生成source和target相同的query
             while (source == target) {
-                target = random.nextInt(boundSize) + 1;
+                target = ((random.nextInt(boundSize) >>> 3) << 3) + 1;
             }
             sourceContext.collect(new Query(partition, String.valueOf(source), String.valueOf(target)));
             Thread.sleep(40);

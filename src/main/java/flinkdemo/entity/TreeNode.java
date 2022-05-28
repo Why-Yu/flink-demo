@@ -1,6 +1,7 @@
 package flinkdemo.entity;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * 字典树中每个节点的基本应完成的功能
@@ -25,7 +26,7 @@ public interface TreeNode {
     /**
      * 在叶子节点上，嵌入新的值节点
      */
-    TreeNode insert(short partialKey, int pathID, int sequencePos);
+    TreeNode insert(Set<Short> partialKeys, int pathID, int sequencePos);
 
     /**
      * 删除节点

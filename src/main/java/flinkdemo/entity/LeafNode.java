@@ -2,6 +2,7 @@ package flinkdemo.entity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 public class LeafNode implements TreeNode{
     // 所处于的缓存路径ID
@@ -33,7 +34,7 @@ public class LeafNode implements TreeNode{
     }
 
     @Override
-    public TreeNode insert(short partialKey, int pathID, int sequencePos) {
+    public TreeNode insert(Set<Short> partialKeys, int pathID, int sequencePos) {
         return null;
     }
 

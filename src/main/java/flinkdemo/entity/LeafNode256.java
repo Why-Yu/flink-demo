@@ -1,13 +1,12 @@
 package flinkdemo.entity;
 
 import java.util.List;
+import java.util.Set;
 
 public class LeafNode256 implements TreeNode{
     public LeafNode[] pointers;
 
     private byte size;
-
-    private static final int ERROR_BOUND = 10;
 
     public LeafNode256() {
         this.pointers = new LeafNode[256];
@@ -35,46 +34,39 @@ public class LeafNode256 implements TreeNode{
     }
 
     /**
-     *利用缓冲区的思路，在添加值节点时，也会将周边的几个格网也赋予相同的值
-     * 从而达到允许误差下的的模糊匹配
+     *利用缓冲区的思路，在添加值节点时，也会将上一层级的周边八个格网也赋予相同的值
+     * 从而达到允许误差下的的模糊匹配(平均误差应该在1.5%左右)
+     * 误差计算:请求平均长度40km,单次匹配平均误差300m,起终点都需要匹配一次，故总平均误差600m
      */
     @Override
-    public TreeNode insert(short partialKey, int pathID, int sequencePos) {
-        short left = (short) Math.max(partialKey - ERROR_BOUND, 0);
-        short right = (short) Math.min(partialKey + ERROR_BOUND, 255);
-        while (left <= right) {
+    public TreeNode insert(Set<Short> partialKeys, int pathID, int sequencePos) {
+        for (short partialKey : partialKeys) {
             // 对没有赋值过的格网进行赋值
-            if (pointers[left] == null) {
-                pointers[left] = new LeafNode(pathID, sequencePos);
+            if (pointers[partialKey] == null) {
+                pointers[partialKey] = new LeafNode(pathID, sequencePos);
                 ++size;
-                // 对已经被不同缓存路径赋值过的格网进行当前缓存路径的赋值
-            } else if (!pointers[left].getPathID().contains(pathID)) {
-                pointers[left].getPathID().add(pathID);
-                pointers[left].getLeafValue().add(sequencePos);
+            // 对已经被不同缓存路径赋值过的格网进行当前缓存路径的赋值
+            } else if (!pointers[partialKey].getPathID().contains(pathID)) {
+                pointers[partialKey].getPathID().add(pathID);
+                pointers[partialKey].getLeafValue().add(sequencePos);
             }
-            ++left;
         }
         // 这个函数的返回值没有意义，直接返回null即可
         return null;
     }
 
     /**
-     *删除的时候必须进行pathID的校验，否则字典树会出问题
+     * 删除的时候必须进行pathID的校验，否则字典树会出问题
      */
     @Override
     public void delete(short partialKey, int pathID) {
-        short left = (short) Math.max(partialKey - ERROR_BOUND, 0);
-        short right = (short) Math.min(partialKey + ERROR_BOUND, 255);
-        while (left <= right) {
-            if (pointers[left] != null && pointers[left].getPathID().contains(pathID)) {
-                if (pointers[left].getPathID().size() == 1) {
-                    pointers[left] = null;
-                    --size;
-                } else {
-                    pointers[left].delete(partialKey, pathID);
-                }
+        if (pointers[partialKey] != null && pointers[partialKey].getPathID().contains(pathID)) {
+            if (pointers[partialKey].getPathID().size() == 1) {
+                pointers[partialKey] = null;
+                --size;
+            } else {
+                pointers[partialKey].delete(partialKey, pathID);
             }
-            ++left;
         }
     }
 

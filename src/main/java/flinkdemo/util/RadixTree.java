@@ -6,7 +6,7 @@ import flinkdemo.entity.Path;
 import flinkdemo.entity.TreeNode;
 import flinkdemo.entity.TreeNode256;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * 整棵树的设计思路如下
@@ -51,7 +51,6 @@ public class RadixTree {
 
     /**
      * 在插入字典树时，采用批量插入，故入参为Path
-     * 插入采用懒扩展设计，当需要插入时才进行扩展校验
      * 具体的insert重载设计，不同场景调用不同insert
      */
     public void insert(Path path) {
@@ -70,44 +69,96 @@ public class RadixTree {
             S2Point s2Point = TopologyGraph.getVertex(dataIndex);
             S2CellId s2CellId = S2CellId.fromPoint(s2Point);
 
-            int level = 1;
-            short partialKey;
-            TreeNode prevNode = root;
-            TreeNode currentNode = root;
-
-            while (level <= MAX_LEVEL) {
-                partialKey = s2CellId.getPartialKey(level);
-                TreeNode tempNode = currentNode.getByPartialKey(partialKey);
-
-                if (tempNode == null) {
-                    if (currentNode.isFull()) {
-                        TreeNode newNode = currentNode.grow();
-                        // 要在上一层级更新引用，故partialKey也需要使用上一层级
-                        short prePartialKey = s2CellId.getPartialKey(level - 1);
-                        prevNode.update(prePartialKey, newNode);
-                        currentNode = newNode;
-                    }
-
-                    prevNode = currentNode;
-                    if (level == 4) {
-                        currentNode.insert(partialKey, pathID, count - 1);
-                        break;
-                    } else if (level == 3) {
-                        currentNode = currentNode.insert(partialKey, true);
-                    } else {
-                        currentNode = currentNode.insert(partialKey);
-                    }
-                } else {
-                    // 由于缓冲区添加，所以即使找到节点也要尝试嵌入左右两边的缓冲区格网
-                    if (level == 4) {
-                        currentNode.insert(partialKey, pathID, count - 1);
-                    }
-                    prevNode = currentNode;
-                    currentNode = tempNode;
-                }
-                level++;
+            // 获取缓冲区插入的所有cell
+            Map<S2CellId, Set<Short>> allNeighbors = getAllNeighbors(s2CellId);
+            for (Map.Entry<S2CellId, Set<Short>> entry : allNeighbors.entrySet()) {
+                // 插入前三层节点
+                TreeNode currentNode = insertPreNode(entry.getKey());
+                // 插入叶子节点
+                currentNode.insert(entry.getValue(), pathID, count - 1);
             }
         }
+    }
+
+    /**
+     * 为减少缓冲区插入时，对邻居格网相同的父格网重复的检索，故先把前三层级的节点插入妥当
+     * 插入采用懒扩展设计，当需要插入时才进行扩展校验
+     *  返回LeafNode256
+     */
+    private TreeNode insertPreNode(S2CellId s2CellId) {
+        int level = 1;
+        short partialKey;
+        TreeNode prevNode = root;
+        TreeNode currentNode = root;
+
+        while (level < MAX_LEVEL) {
+            partialKey = s2CellId.getPartialKey(level);
+            TreeNode tempNode = currentNode.getByPartialKey(partialKey);
+
+            if (tempNode == null) {
+                if (currentNode.isFull()) {
+                    TreeNode newNode = currentNode.grow();
+                    // 要在上一层级更新引用，故partialKey也需要使用上一层级
+                    short prePartialKey = s2CellId.getPartialKey(level - 1);
+                    prevNode.update(prePartialKey, newNode);
+                    currentNode = newNode;
+                }
+
+                prevNode = currentNode;
+                if (level == 3) {
+                    currentNode = currentNode.insert(partialKey, true);
+                    break;
+                } else {
+                    currentNode = currentNode.insert(partialKey);
+                }
+            } else {
+                prevNode = currentNode;
+                currentNode = tempNode;
+            }
+            level++;
+        }
+        return currentNode;
+    }
+
+    /**
+     * 获取当前点在level 15级上的8个邻居，加上自己的level 15父格网，形成9宫格存储在outPut中
+     * 这9个cell覆盖的范围就作为我们某一点的缓冲区，其下有36个level 16cell，
+     * 在字典树中这些cell可能分布在不同的第三层级节点下
+     * 故最后以level 12即字典树第三层的partialKey为键，第四层partialKey为值返回结果
+     */
+    private Map<S2CellId, Set<Short>> getAllNeighbors(S2CellId s2CellId) {
+        // S2CellId.getAllNeighbors函数会返回相同格网，原因不明，故只能多次调用getEdgeNeighbors
+        S2CellId s2CellParent = s2CellId.parent(15);
+        S2CellId[] neighbors = new S2CellId[4];
+        s2CellParent.getEdgeNeighbors(neighbors);
+        S2CellId down = neighbors[0];
+        S2CellId up = neighbors[2];
+        List<S2CellId> outPut = new ArrayList<>(Arrays.asList(neighbors));
+        outPut.add(s2CellParent);
+        down.getEdgeNeighbors(neighbors);
+        outPut.add(neighbors[1]);
+        outPut.add(neighbors[3]);
+        up.getEdgeNeighbors(neighbors);
+        outPut.add(neighbors[1]);
+        outPut.add(neighbors[3]);
+
+        Map<S2CellId, Set<Short>> allNeighbors = new HashMap<>();
+        for (S2CellId s2CellId1 : outPut) {
+            S2CellId parentId = s2CellId1.parent(12);
+            if (allNeighbors.containsKey(parentId)) {
+                Set<Short> neighborCell = allNeighbors.get(parentId);
+                for (S2CellId s2CellId2 : s2CellId1.children()) {
+                    neighborCell.add(s2CellId2.getPartialKey(4));
+                }
+            } else {
+                Set<Short> neighborCell = new HashSet<>();
+                for (S2CellId s2CellId2 : s2CellId1.children()) {
+                    neighborCell.add(s2CellId2.getPartialKey(4));
+                }
+                allNeighbors.put(parentId, neighborCell);
+            }
+        }
+        return allNeighbors;
     }
 
     /**
@@ -127,43 +178,55 @@ public class RadixTree {
             }
 
             S2Point s2Point = TopologyGraph.getVertex(dataIndex);
-            S2CellId s2CellId = S2CellId.fromPoint(s2Point);
+            S2CellId s2DeleteCellId = S2CellId.fromPoint(s2Point);
 
-            int level = 1;
-            short partialKey;
-            TreeNode currentNode = root;
-            // 根节点无需保存
-            TreeNode[] nodeList = new TreeNode[4];
-            short[] partialKeyList = new short[4];
-            // 由于我们执行的是缓冲区删除，故删除的时候可能会把周边的节点也一起删除，造成后续节点使用getByPartialKey时返回空指针
-            // 我们利用此变量来进行安全的删除操作
-            boolean isDeleteBefore = false;
+            Map<S2CellId, Set<Short>> allNeighbors = getAllNeighbors(s2DeleteCellId);
+            for (Map.Entry<S2CellId, Set<Short>> entry : allNeighbors.entrySet()) {
+                S2CellId s2CellId = entry.getKey();
+                int level = 1;
+                short partialKey;
+                TreeNode currentNode = root;
+                // 根节点无需保存
+                TreeNode[] nodeList = new TreeNode[3];
+                short[] partialKeyList = new short[3];
+                // 由于我们执行的是缓冲区删除，故删除的时候可能会把周边的节点也一起删除，造成后续节点使用getByPartialKey时返回空指针
+                // 我们利用此变量来进行安全的删除操作
+                boolean isDeleteBefore = false;
 
-            // 从上到下逐层保存信息
-            while (level <= MAX_LEVEL) {
-                partialKey = s2CellId.getPartialKey(level);
-                partialKeyList[level - 1] = partialKey;
-                currentNode = currentNode.getByPartialKey(partialKey);
-                // 如果返回空指针并且当前层数小于最高层级，说明包含此节点的LeafNode256已经被删除了
-                // 所以后续计算全部跳过即可
-                if (currentNode == null && level < MAX_LEVEL) {
-                    isDeleteBefore = true;
-                    break;
-                }
-                nodeList[level - 1] = currentNode;
-                ++level;
-            }
-
-            if (!isDeleteBefore) {
-                // 从下到上，逐层删除(如果有一层不是空的，则可以直接跳出循环)
-                for (int i = 2 ; i >= 0 ; --i) {
-                    nodeList[i].delete(partialKeyList[i + 1], pathID);
-                    if (!nodeList[i].isEmpty()) {
+                // 从上到下逐层保存信息
+                while (level < MAX_LEVEL) {
+                    partialKey = s2CellId.getPartialKey(level);
+                    partialKeyList[level - 1] = partialKey;
+                    currentNode = currentNode.getByPartialKey(partialKey);
+                    // 如果返回空指针，至少说明包含此节点的LeafNode256即level 12或者更高层级的父节点已经被删除了
+                    // 所以后续计算全部跳过即可
+                    if (currentNode == null) {
+                        isDeleteBefore = true;
                         break;
                     }
+                    nodeList[level - 1] = currentNode;
+                    ++level;
                 }
-                if (nodeList[0].isEmpty()) {
-                    root.delete(partialKeyList[0], pathID);
+
+                if (!isDeleteBefore) {
+                    // 从下到上，逐层删除(如果有一层不是空的，则可以直接跳出循环)
+                    for (int i = 2 ; i >= 0 ; --i) {
+                        if (i == 2) {
+                            TreeNode tempNode = nodeList[i];
+                            for (short key : entry.getValue()) {
+                                tempNode.delete(key, pathID);
+                            }
+                        } else {
+                            nodeList[i].delete(partialKeyList[i + 1], pathID);
+                        }
+                        // 若非空，则无需上一层级删除
+                        if (!nodeList[i].isEmpty()) {
+                            break;
+                        }
+                    }
+                    if (nodeList[0].isEmpty()) {
+                        root.delete(partialKeyList[0], pathID);
+                    }
                 }
             }
         }
