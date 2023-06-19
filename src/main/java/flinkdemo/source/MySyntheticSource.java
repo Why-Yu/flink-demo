@@ -35,7 +35,7 @@ public class MySyntheticSource implements SourceFunction<Query> {
                 target = ((random.nextInt(boundSize) >>> 3) << 3) + 1;
             }
             sourceContext.collect(new Query(partition, String.valueOf(source), String.valueOf(target)));
-            Thread.sleep(40);
+            Thread.sleep(30);
         }
     }
 

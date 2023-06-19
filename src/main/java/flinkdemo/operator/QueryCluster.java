@@ -89,7 +89,7 @@ public class QueryCluster extends KeyedProcessFunction<Integer, Query, Query> {
             if (queryInCluster(query, cluster, s2RegionCoverer)) {
                 query.setClusterID(cluster.clusterID);
                 // 如果query长度大于所属聚簇椭圆的a，则设为可缓存的
-                if (query.length > 0.5 * cluster.boundEllipse.constant) {
+                if (query.length > 0.25 * cluster.boundEllipse.constant) {
                     query.setCacheable(true);
                 }
                 collector.collect(query);

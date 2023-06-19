@@ -40,7 +40,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
 //            .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
 //            .build();
     // 注册的计时器时间窗口
-    private static final long ONE_MINUTE = 60 * 1000;
+    private static final long ONE_MINUTE = 30 * 1000;
     // 为防止计时器在某一个时刻集中运行，利用随机数制造一个时间小偏差
     private static final Random random = new Random();
     // 关于localCache的一些可设置参数，具体解释见myJob.properties
@@ -187,7 +187,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         Tuple3<Integer, Integer, Integer> matchResult = Tuple3.of(0, 0, 0);
         // 最终结果储存处
         List<String> pathSequence;
-
+//        long startTime = System.nanoTime();
         // ALLT算法的路径结果才可以加入缓存
         boolean addible = false;
         // 进行完美或完全匹配
@@ -208,6 +208,14 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 }
             }
         }
+
+        // 平均执行时间监控部分
+//        if (ScheduledStats.ready && pathSequence.size() != 0) {
+////            System.out.println("start:" + query.sourceID + "  end:" + query.targetID +
+////                    "  time:" + (System.nanoTime() - startTime) / 1000000);
+//            ScheduledStats.addTimeUsage(context.getCurrentKey(), System.nanoTime() - startTime);
+//        }
+
         // 可以先把结果输出了，不需要等待缓存添加完成
         collector.collect(pathSequence.toString());
         // --- 核心计算部分结束
@@ -215,7 +223,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // --- 缓存添加部分
         // 如果query可以被添加进缓存，并且在现有缓存集中匹配不到,进行缓存添加操作
         // (可被添加进缓存的query是>0.5 * cluster.boundEllipse.constant )
-        if (query.cacheable && addible) {
+        if (query.cacheable && addible && pathSequence.size() != 0) {
             // 未收敛的情况下再进行后续操作
             if (immutabilityCountState.value() < convergence) {
                 int winnersSize = winnersSizeState.value();
@@ -299,18 +307,20 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         } else {
             // 根据hit ratio判断是否收敛以停止计时器注册
             double hitRatio = hitNumberState.value() / queryNumber;
+            ScheduledStats.addQueryNumber(ctx.getCurrentKey(), queryNumber);
+            ScheduledStats.addHitNumber(ctx.getCurrentKey(), hitNumberState.value());
             // 将本时间窗口的query number、hit number重置为零
             queryNumberState.update(0);
             hitNumberState.update(0.0);
             // 判断是否收敛(加一个hit ratio > 0的判断的目的在于，如果cache一直没有命中，hit ratio自然没有变化，但这是不算收敛的)
-            if (hitRatio > 0) {
-                if (Math.abs(hitRatio - priorHitRatioState.value()) < negligible) {
-                    immutabilityCountState.update(immutabilityCountState.value() + 1);
-                } else {
-                    immutabilityCountState.update(0);
-                }
-                priorHitRatioState.update(hitRatio);
-            }
+//            if (hitRatio > 0) {
+//                if (Math.abs(hitRatio - priorHitRatioState.value()) < negligible) {
+//                    immutabilityCountState.update(immutabilityCountState.value() + 1);
+//                } else {
+//                    immutabilityCountState.update(0);
+//                }
+//                priorHitRatioState.update(hitRatio);
+//            }
         }
         // --- 判断当前聚簇是否已经收敛或者是被废弃
 
@@ -384,6 +394,7 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
                 for (Tuple2<Integer, Integer> targetTuple2 : targetTable) {
 //                    logger.info(targetTuple2.toString());
                     if (Objects.equals(targetTuple2.f0, sourceTuple2.f0)) {
+                        logger.info("full hit");
                         matchResult.setFields(targetTuple2.f0, sourceTuple2.f1, targetTuple2.f1);
                         return true;
                     }
@@ -444,7 +455,9 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         pathSequence = pathCalculator.getAstarShortestPath(queryS);
         pathSequence.addAll(getSubPath(pathMapState, matchResult));
         List<String> tailSequence = pathCalculator.getAstarShortestPath(queryT);
-        tailSequence.remove(0);
+        if (tailSequence.size() != 0) {
+            tailSequence.remove(0);
+        }
         pathSequence.addAll(tailSequence);
         return pathSequence;
     }
@@ -527,6 +540,13 @@ public class CacheAndLandmark extends KeyedProcessFunction<String, Query, String
         // 大部分无法命中缓存的query都是在这里和下一个判断分支这两个分支流中实际解决的
         if (isTargetInSL && isTargetInTL) {
             resultList = pathCalculator.getLandmarkShortestPath(query, sourceLandmarkState, targetLandmarkState);
+//            ScheduledStats.addCloseMapSize(pathCalculator.getCloseMap().size(), 2);
+//            pathCalculator.getLandmarkShortestPath(query, sourceLandmarkState);
+//            int num = pathCalculator.getCloseMap().size();
+//            pathCalculator.getLandmarkShortestPath(query, targetLandmarkState);
+//            ScheduledStats.addCloseMapSize((pathCalculator.getCloseMap().size() + num) / 2, 1);
+//            pathCalculator.getAstarShortestPath(query);
+//            ScheduledStats.addCloseMapSize(pathCalculator.getCloseMap().size(), 0);
         } else if (isSourceInSL && isSourceInTL) {
             resultList = pathCalculator.getLandmarkShortestPath(query.getOppositeQuery(), sourceLandmarkState, targetLandmarkState);
         } else if (isTargetInSL){

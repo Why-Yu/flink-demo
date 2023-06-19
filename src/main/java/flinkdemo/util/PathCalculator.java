@@ -120,9 +120,7 @@ public strictfp class PathCalculator {
             resultList.add(currentNode.dataIndex);
             currentNode = currentNode.parent;
         }
-//        logger.info("加速比例:" + String.valueOf(better / total) + "   total:" + total + "   resultSize:" + resultList.size()
-//        + "   openMapSize:" + openMap.size() + "   closeMap:" + closeMap.size() + "   length:" +
-//                getDistance(new Node("1", query.source, 0.0), query.target));
+//        logger.info("oneMarkCloseMap:" + closeMap.size() + "sourceID:" + query.sourceID);
 //        logger.info("landmark:" + String.valueOf(total) + "   query:" + query.sourceID);
 //        logger.info("landmark resolve");
         return resultList;
@@ -215,9 +213,7 @@ public strictfp class PathCalculator {
             resultList.add(currentNode.dataIndex);
             currentNode = currentNode.parent;
         }
-//        logger.info("加速比例:" + String.valueOf(better / total) + "   total:" + total + "   resultSize:" + resultList.size()
-//                + "   openMapSize:" + openMap.size() + "   closeMap:" + closeMap.size() + "   length:" +
-//                getDistance(new Node("1", query.source, 0.0), query.target));
+//        logger.info("twoMarksCloseMap:" + closeMap.size() + "sourceID:" + query.sourceID);
         return resultList;
     }
 

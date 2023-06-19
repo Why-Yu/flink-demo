@@ -25,6 +25,7 @@ import flinkdemo.operator.QueryCluster;
 import flinkdemo.operator.WindowRouter;
 import flinkdemo.source.MySyntheticSource;
 import flinkdemo.util.DataLoad;
+import flinkdemo.util.ScheduledStats;
 import flinkdemo.util.TopologyGraph;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -83,6 +84,9 @@ public class StreamingJob {
 //
 		DataStream<String> miniResultDataStream = miniDataStream.map(new MiniResolver());
 
+//		ScheduledStats.startTimeStats();
+//		ScheduledStats.startMapSizeStats();
+		ScheduledStats.startHitNumberStats();
 //		landmarkResultDataStream.print();
 //		miniDataStream.print();
 

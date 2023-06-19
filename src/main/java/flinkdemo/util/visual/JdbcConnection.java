@@ -18,9 +18,10 @@ public class JdbcConnection {
 
     public static void main(String[] args) throws Exception {
         JdbcConnection jdbcConnection = new JdbcConnection();
-        jdbcConnection.defineClusterTable();
+//        jdbcConnection.defineClusterTable();
+//        jdbcConnection.defineTable();
 //        jdbcConnection.addPoint();
-//        jdbcConnection.addLine();
+        jdbcConnection.addLine();
         jdbcConnection.close();
     }
 
@@ -36,7 +37,7 @@ public class JdbcConnection {
     public void defineTable() throws Exception {
         Statement state = conn.createStatement();
 
-        String sql = "CREATE TABLE background (" +
+        String sql = "CREATE TABLE smallBackground (" +
                 "ID serial PRIMARY KEY," +
                 "geom geometry(LINESTRING, 4326)" +
                 ");";
@@ -70,8 +71,8 @@ public class JdbcConnection {
     }
 
     public void addLine() throws Exception {
-        String coDataFileName = "F:\\\\road network benchmark\\\\USA-road-d.NY.co\\\\USA-road-d.NY.co";
-        String grDataFileName = "F:\\\\road network benchmark\\\\USA-road-d.NY.gr\\\\USA-road-d.NY.gr";
+        String coDataFileName = "F:\\road network benchmark\\small-NY.co";
+        String grDataFileName = "F:\\road network benchmark\\small-NY.gr";
         Stream<String> coLines = Files.lines(Paths.get(coDataFileName));
         Stream<String> grLines = Files.lines(Paths.get(grDataFileName));
         Statement state = conn.createStatement();
@@ -91,7 +92,7 @@ public class JdbcConnection {
                 S2LatLng source = new S2LatLng(TopologyGraph.getVertex(arr[1]));
                 S2LatLng target = new S2LatLng(TopologyGraph.getVertex(arr[2]));
                 try {
-                    String sql = "INSERT INTO background(geom) VALUES ('LINESTRING(" + source.lngDegrees() + " "
+                    String sql = "INSERT INTO smallBackground(geom) VALUES ('LINESTRING(" + source.lngDegrees() + " "
                             + source.latDegrees() + "," + target.lngDegrees() + " "
                             + target.latDegrees() + ")')";
                     state.executeUpdate(sql);

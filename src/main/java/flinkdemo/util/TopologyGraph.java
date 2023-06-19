@@ -157,7 +157,7 @@ public strictfp class TopologyGraph {
         }
     }
 
-    /*
+    /**
     获取所有不在closeMap中并与当前节点相邻的节点(形成Node列表返回给路径计算器)
      */
     public static List<Node> getUnclosedLinkedNode(Node node, HashMap<String, Double> closeMap) {
